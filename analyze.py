@@ -2,12 +2,16 @@
 AG 성능 비교 분석 스크립트 - PC 직접 실행용
 사용법: python analyze.py 동기모드
         python analyze.py 비동기모드
+
+환경변수 설정 필요:
+  Windows: setx NOTION_TOKEN "your_token"
+  PowerShell: $env:NOTION_TOKEN = "your_token"
 """
 import sys, os, csv, io, json, subprocess
 import urllib.request, urllib.error
 from datetime import datetime
 
-NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "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")
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 PARENT_PAGE_ID = "366dadb5-6b2f-8019-8e65-d0de1d942753"
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR   = os.path.join(BASE_DIR, "data")
@@ -94,8 +98,6 @@ def make_charts(d1, d10, h1, h10):
             ax.xaxis.label.set_color(TXT); ax.yaxis.label.set_color(TXT)
             ax.title.set_color(TXT)
 
-        charts = []
-
         # 차트1: HADR wait
         w1  = [float(r["avg_wait_per_commit_ms"]) for r in h1]
         w10 = [float(r["avg_wait_per_commit_ms"]) for r in h10]
@@ -106,9 +108,8 @@ def make_charts(d1, d10, h1, h10):
         style(ax); ax.set_title("HADR avg_wait_per_commit_ms", fontsize=13, pad=12)
         ax.legend(facecolor=BG, labelcolor=TXT, fontsize=9, framealpha=0.5)
         plt.tight_layout()
-        p = os.path.join(CHARTS_DIR, "chart_01_hadr_wait.png")
-        plt.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG); plt.close()
-        charts.append(p); print(f"  chart_01 OK")
+        plt.savefig(os.path.join(CHARTS_DIR, "chart_01_hadr_wait.png"), dpi=150, bbox_inches="tight", facecolor=BG)
+        plt.close(); print("  chart_01 OK")
 
         # 차트2: Throughput
         c1  = [float(r["commits_per_sec"]) for r in h1]
@@ -126,9 +127,8 @@ def make_charts(d1, d10, h1, h10):
         style(axes[1]); axes[1].set_title("Theoretical Max TPS")
         axes[1].legend(facecolor=BG, labelcolor=TXT, fontsize=9, framealpha=0.5)
         plt.tight_layout()
-        p = os.path.join(CHARTS_DIR, "chart_02_throughput.png")
-        plt.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG); plt.close()
-        charts.append(p); print(f"  chart_02 OK")
+        plt.savefig(os.path.join(CHARTS_DIR, "chart_02_throughput.png"), dpi=150, bbox_inches="tight", facecolor=BG)
+        plt.close(); print("  chart_02 OK")
 
         # 차트3: Batch
         b1  = [d["batch"] or 0 for d in d1]
@@ -139,9 +139,8 @@ def make_charts(d1, d10, h1, h10):
         style(ax); ax.set_title("Batch Requests/sec", fontsize=13, pad=12)
         ax.legend(facecolor=BG, labelcolor=TXT, fontsize=9, framealpha=0.5)
         plt.tight_layout()
-        p = os.path.join(CHARTS_DIR, "chart_03_batch.png")
-        plt.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG); plt.close()
-        charts.append(p); print(f"  chart_03 OK")
+        plt.savefig(os.path.join(CHARTS_DIR, "chart_03_batch.png"), dpi=150, bbox_inches="tight", facecolor=BG)
+        plt.close(); print("  chart_03 OK")
 
         # 차트4: CPU + NIC
         cpu1=[d["cpu"] or 0 for d in d1]; cpu10=[d["cpu"] or 0 for d in d10]
@@ -160,18 +159,17 @@ def make_charts(d1, d10, h1, h10):
         style(axes[1]); axes[1].set_title("NIC Usage (%)")
         axes[1].legend(facecolor=BG, labelcolor=TXT, fontsize=9, framealpha=0.5)
         plt.tight_layout()
-        p = os.path.join(CHARTS_DIR, "chart_04_cpu_nic.png")
-        plt.savefig(p, dpi=150, bbox_inches="tight", facecolor=BG); plt.close()
-        charts.append(p); print(f"  chart_04 OK")
-
-        return charts
+        plt.savefig(os.path.join(CHARTS_DIR, "chart_04_cpu_nic.png"), dpi=150, bbox_inches="tight", facecolor=BG)
+        plt.close(); print("  chart_04 OK")
 
     except ImportError:
         print("  [경고] matplotlib 없음 — pip install matplotlib")
-        return []
 
 
 def notion_req(method, path, body=None):
+    if not NOTION_TOKEN:
+        print("  [오류] NOTION_TOKEN 환경변수 없음")
+        return None
     url = "https://api.notion.com/v1" + path
     data = json.dumps(body).encode() if body else None
     req = urllib.request.Request(url, data=data, method=method)
@@ -190,10 +188,10 @@ def create_page(stats):
     today = datetime.now().strftime("%Y-%m-%d")
     title = f"[AG 비교분석] NIC 업그레이드 효과 검증({MODE}) — {today}"
 
-    w_imp  = round((stats["wait_1g"]  - stats["wait_10g"])  / stats["wait_1g"]  * 100, 1)
-    t_imp  = round((stats["tps_10g"]  - stats["tps_1g"])    / stats["tps_1g"]   * 100, 1)
-    c_imp  = round((stats["com_10g"]  - stats["com_1g"])    / stats["com_1g"]   * 100, 1)
-    b_imp  = round((stats["bat_10g"]  - stats["bat_1g"])    / stats["bat_1g"]   * 100, 1)
+    w_imp = round((stats["wait_1g"] - stats["wait_10g"]) / stats["wait_1g"] * 100, 1)
+    t_imp = round((stats["tps_10g"] - stats["tps_1g"])   / stats["tps_1g"]  * 100, 1)
+    c_imp = round((stats["com_10g"] - stats["com_1g"])   / stats["com_1g"]  * 100, 1)
+    b_imp = round((stats["bat_10g"] - stats["bat_1g"])   / stats["bat_1g"]  * 100, 1)
 
     md = f"""## 📋 테스트 환경
 
@@ -221,8 +219,6 @@ def create_page(stats):
 
 ## 🔍 NIC 병목 분석
 
-10G NIC 업그레이드는 SYNCHRONOUS_COMMIT 환경에서 유의미한 성능 개선 효과를 보였습니다.
-
 - HADR avg_wait: {stats["wait_1g"]:.3f}ms → {stats["wait_10g"]:.3f}ms (**{w_imp}% 개선**, 위험임계값 20ms 대비 정상)
 - TPS: {stats["tps_1g"]:.0f} → {stats["tps_10g"]:.0f} (**{t_imp}% 향상**)
 - Transaction Delay 증가는 처리량 증가에 따른 복제 큐 증가이며 성능 저하가 아님
@@ -231,20 +227,14 @@ def create_page(stats):
 
 - CPU: {stats["cpu_1g"]:.1f}% → {stats["cpu_10g"]:.1f}% (임계값 85% 미만)
 - NIC: 10G 전환 후 5% 미만 (임계값 70% 대비 충분한 여유)
-- 병목은 NIC에 집중되어 있었으며 10G 업그레이드로 해소됨
 
 ## 💡 결론 및 권고사항
 
 핵심: 1G → 10G NIC 업그레이드로 HADR 대기시간 {w_imp}% 감소, TPS {t_imp}% 향상
 
-추가 최적화 권고:
-- Jumbo Frame(MTU 9000) 설정
-- RSS/VMQ 활성화
-- HADR 전용 NIC 분리
+추가 최적화 권고: Jumbo Frame(MTU 9000), RSS/VMQ 활성화, HADR 전용 NIC 분리
 
-다음 단계:
-- 비동기 모드 비교 분석
-- 25G NIC 업그레이드 효과 측정
+다음 단계: 비동기 모드 비교 분석, 25G NIC 업그레이드 효과 측정
 """
 
     body = {
@@ -261,7 +251,6 @@ def create_page(stats):
     page_url = result.get("url", "")
     print(f"  페이지 생성 OK: {page_url}")
 
-    # 차트 이미지 블록 (GitHub Pages URL)
     chart_files = ["chart_01_hadr_wait.png", "chart_02_throughput.png",
                    "chart_03_batch.png",     "chart_04_cpu_nic.png"]
     blocks = [{"object": "block", "type": "image",
@@ -275,11 +264,13 @@ def create_page(stats):
 def main():
     print(f"\n{'='*50}\nAG 성능 분석 — {MODE}\n{'='*50}")
 
+    if not NOTION_TOKEN:
+        print("[경고] NOTION_TOKEN 환경변수 없음 — Notion 저장 건너뜀")
+
     files = find_csv()
     missing = [k for k in ["1g", "10g", "hadr"] if k not in files]
     if missing:
         print(f"[오류] CSV 파일 없음: {missing}")
-        print(f"  발견된 파일: {files}")
         return
 
     print(f"\n[1] CSV 파싱...")
@@ -304,7 +295,6 @@ def main():
         "tx_10g":   pmean(d10, "tx"),
     }
     print(f"  HADR wait 1G:{stats['wait_1g']:.3f}ms  10G:{stats['wait_10g']:.3f}ms")
-    print(f"  TPS       1G:{stats['tps_1g']:.0f}     10G:{stats['tps_10g']:.0f}")
 
     print(f"\n[2] 차트 생성...")
     make_charts(d1, d10, h1, h10)
@@ -316,10 +306,12 @@ def main():
     r = subprocess.run("git push", shell=True, capture_output=True, text=True)
     print("  git push:", "OK" if r.returncode == 0 else r.stderr.strip())
 
-    print(f"\n[4] Notion 페이지 생성...")
-    url = create_page(stats)
-
-    print(f"\n{'='*50}\n완료! {url}\n{'='*50}\n")
+    if NOTION_TOKEN:
+        print(f"\n[4] Notion 페이지 생성...")
+        url = create_page(stats)
+        print(f"\n{'='*50}\n완료! {url}\n{'='*50}\n")
+    else:
+        print(f"\n{'='*50}\n차트 생성/push 완료 (Notion 건너뜀)\n{'='*50}\n")
 
 
 if __name__ == "__main__":

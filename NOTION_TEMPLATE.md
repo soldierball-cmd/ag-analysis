@@ -2,7 +2,7 @@
 
 ## 기본 정보
 - 상위 페이지 ID: 366dadb5-6b2f-8019-8e65-d0de1d942753
-- Notion PAT: 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
+- Notion PAT: 환경변수 NOTION_TOKEN 사용 (코드에 직접 입력 금지)
 - GitHub Charts URL: https://soldierball-cmd.github.io/ag-analysis/charts/
 - 차트 파일명: chart_01_hadr_wait.png / chart_02_throughput.png / chart_03_batch.png / chart_04_cpu_nic.png
 
@@ -111,27 +111,26 @@
 
 ## Claude가 직접 Notion 작성 시 절차
 
-1. CSV 파일 위치 확인: D:\12.git\ag-analysis\data\
+1. CSV 파일 위치: D:\12.git\ag-analysis\data\
    - 동기모드_1G_NIC.csv / 동기모드_10G_NIC.csv
    - 비동기모드_1G_NIC.csv / 비동기모드_10G_NIC.csv
    - hadr_sync_commit_monitor.csv
 
-2. 파일 읽기: filesystem MCP로 읽거나, 사용자가 업로드한 파일 사용
-
-3. 통계 계산 (bash_tool Python):
-   - PDH CSV: CP949 인코딩, 컬럼에서 "% Processor Time", "Batch Requests/sec",
-     "Disk Transfers/sec", "Transaction Delay", "Bytes Sent to Replica/sec" 추출
+2. 통계 계산:
+   - PDH CSV: CP949 인코딩
+     컬럼: % Processor Time, Batch Requests/sec, Disk Transfers/sec,
+           Transaction Delay, Bytes Sent to Replica/sec
    - HADR CSV: scenario 컬럼으로 필터 (동기모드_1G_NIC / 동기모드_10G_NIC)
-     avg_wait_per_commit_ms, commits_per_sec, theoretical_max_tps 사용
+     컬럼: avg_wait_per_commit_ms, commits_per_sec, theoretical_max_tps
    - NIC 사용률 = Bytes Sent to Replica/sec × 8 / NIC대역폭(bps) × 100
      1G = 1,000,000,000bps / 10G = 10,000,000,000bps
 
-4. Notion MCP로 새 페이지 생성:
+3. Notion MCP로 새 페이지 생성:
    - notion-create-pages 사용
    - parent: page_id = 366dadb5-6b2f-8019-8e65-d0de1d942753
    - 위 본문 구조 그대로 작성 ({변수} 자리에 실측값 대입)
 
-5. 주의사항:
-   - Claude 서버에서 차트 생성 후 base64로 컨텍스트에 올리면 안 됨 (컨텍스트 폭발)
-   - 차트는 PC에서 analyze.py 실행 후 git push → GitHub Pages URL 사용
-   - analyze.py 실행: python analyze.py 동기모드
+4. 주의사항:
+   - Claude 서버에서 차트 base64를 컨텍스트에 올리면 안 됨 (컨텍스트 폭발)
+   - 차트는 PC에서 git push 후 GitHub Pages URL 사용
+   - 토큰은 코드/파일에 직접 입력 금지 — 환경변수(NOTION_TOKEN)로만 사용
