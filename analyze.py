@@ -148,8 +148,9 @@ def make_charts(d1, d10, h1, h10):
         ax1.axhline(aw10, color=C10, lw=0.8, ls="--", alpha=0.4)
         style(ax1, "HADR avg_wait_per_commit_ms", ylabel="ms")
         ax1.legend(facecolor=CARD, labelcolor=TXT, fontsize=9, framealpha=0.8, loc="upper right")
-        imp = round((aw1-aw10)/aw1*100,1)
-        ax1.text(0.02, 0.92, f"Improved {imp}%", transform=ax1.transAxes, color=GRN, fontsize=11, fontweight="bold")
+        imp = round((aw1-aw10)/aw1*100,1) if aw1 != 0 else 0
+        imp_label = f"Improved {imp}%" if aw1 != 0 else "ASYNC: wait N/A"
+        ax1.text(0.02, 0.92, imp_label, transform=ax1.transAxes, color=GRN, fontsize=11, fontweight="bold")
 
         ax2.hist(w1,  bins=25, color=C1,  alpha=0.85, edgecolor=BG, linewidth=0.3)
         ax2.axvline(aw1,  color="white", lw=1.5, ls="--", label=f"avg {aw1}ms")
@@ -178,8 +179,9 @@ def make_charts(d1, d10, h1, h10):
             ax.fill_between(range(len(vb)), vb, alpha=0.08, color=C10)
             style(ax, lbl, ylabel=unit)
             ax.legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
-            i = round((ab_-aa)/aa*100,1)
-            ax.text(0.05, 0.93, f"+{i}%", transform=ax.transAxes, color=GRN, fontsize=10, fontweight="bold")
+            i = round((ab_-aa)/aa*100,1) if aa != 0 else 0
+            i_txt = f"+{i}%" if aa != 0 else "N/A"
+            ax.text(0.05, 0.93, i_txt, transform=ax.transAxes, color=GRN, fontsize=10, fontweight="bold")
         plt.suptitle("Throughput Comparison - 1G vs 10G NIC", color=TXT, fontsize=13, fontweight="bold", y=1.02)
         plt.tight_layout()
         plt.savefig(os.path.join(CHARTS_DIR, "chart_02_throughput.png"), dpi=150, bbox_inches="tight", facecolor=BG)
@@ -209,8 +211,9 @@ def make_charts(d1, d10, h1, h10):
         axes[1].axhspan(70, max(nic1)+5, alpha=0.05, color=YEL)
         style(axes[1], "NIC Usage (%)", ylabel="%")
         axes[1].legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
-        ni = round((anic1-anic10)/anic1*100,1)
-        axes[1].text(0.05, 0.93, f"-{ni}% ({anic1}% -> {anic10}%)",
+        ni = round((anic1-anic10)/anic1*100,1) if anic1 != 0 else 0
+        ni_txt = f"-{ni}% ({anic1}% -> {anic10}%)" if anic1 != 0 else "N/A"
+        axes[1].text(0.05, 0.93, ni_txt,
                      transform=axes[1].transAxes, color=GRN, fontsize=9)
 
         plt.suptitle("Resource Usage - CPU & NIC", color=TXT, fontsize=13, fontweight="bold", y=1.02)
@@ -238,8 +241,12 @@ def make_charts(d1, d10, h1, h10):
                 ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+top*0.02,
                         fmt.format(val), ha="center", va="bottom",
                         color=TXT, fontsize=10, fontweight="bold")
-            if lower: i_val=round((v1-v10)/v1*100,1); txt=f"-{i_val}%"
-            else:     i_val=round((v10-v1)/v1*100,1); txt=f"+{i_val}%"
+            if lower:
+                i_val = round((v1-v10)/v1*100,1) if v1 != 0 else 0
+                txt = f"-{i_val}%" if v1 != 0 else "N/A"
+            else:
+                i_val = round((v10-v1)/v1*100,1) if v1 != 0 else 0
+                txt = f"+{i_val}%" if v1 != 0 else "N/A"
             ax.text(0.5, 0.97, txt, transform=ax.transAxes, ha="center", va="top",
                     color=GRN, fontsize=13, fontweight="bold")
             style(ax, label, xlabel="", ylabel="")
@@ -278,10 +285,16 @@ def create_page(stats):
     today = datetime.now().strftime("%Y-%m-%d")
     title = f"[AG 비교분석] NIC 업그레이드 효과 검증({MODE}) — {today}"
 
-    w_imp = round((stats["wait_1g"] - stats["wait_10g"]) / stats["wait_1g"] * 100, 1)
-    t_imp = round((stats["tps_10g"] - stats["tps_1g"])   / stats["tps_1g"]  * 100, 1)
-    c_imp = round((stats["com_10g"] - stats["com_1g"])   / stats["com_1g"]  * 100, 1)
-    b_imp = round((stats["bat_10g"] - stats["bat_1g"])   / stats["bat_1g"]  * 100, 1)
+    def safe_imp(a, b, higher_is_better=True):
+        if a == 0: return "N/A"
+        imp = round((b - a) / a * 100, 1) if higher_is_better else round((a - b) / a * 100, 1)
+        arrow = "▲" if higher_is_better else "▼"
+        return f"{arrow}{imp}%"
+
+    w_imp = safe_imp(stats["wait_1g"],  stats["wait_10g"],  higher_is_better=False)
+    t_imp = safe_imp(stats["tps_1g"],   stats["tps_10g"],   higher_is_better=True)
+    c_imp = safe_imp(stats["com_1g"],   stats["com_10g"],   higher_is_better=True)
+    b_imp = safe_imp(stats["bat_1g"],   stats["bat_10g"],   higher_is_better=True)
 
     md = f"""## 📋 테스트 환경
 

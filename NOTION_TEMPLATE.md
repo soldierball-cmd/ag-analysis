@@ -1,209 +1,192 @@
-# Notion 페이지 작성 템플릿 (AG 성능 비교 분석)
+# Notion 페이지 작성 템플릿 — 범용 성능 비교 분석
 
 ## 기본 정보
 - 상위 페이지 ID: 366dadb5-6b2f-8019-8e65-d0de1d942753
-- Notion PAT: 환경변수 NOTION_TOKEN 사용 (코드에 직접 입력 금지)
-- GitHub Charts URL: https://soldierball-cmd.github.io/ag-analysis/charts/
-- 차트 파일명: chart_01_hadr_wait.png / chart_02_throughput.png / chart_03_batch.png / chart_04_cpu_nic.png
+- Charts Base URL: https://soldierball-cmd.github.io/ag-analysis/charts
+- 차트 파일명 4종 고정:
+  - chart_01_hadr_wait.png (또는 시나리오별 주요 지표)
+  - chart_02_throughput.png
+  - chart_03_cpu_nic.png
+  - chart_04_kpi_summary.png
+
+---
 
 ## 페이지 제목 형식
-[AG 비교분석] {테스트 제목} — {YYYY-MM-DD}
-
-## 페이지 아이콘
-📊
+[분석] {테스트 제목} — {YYYY-MM-DD}
+예) [분석] AG 동기모드 NIC 1G vs 10G 성능 비교 — 2026-05-22
 
 ---
 
-## 통계 계산 기준 (반드시 준수)
-- 전체 구간 통계: avg, min, max, P95, stdev
-- 안정구간 통계: 워밍업 10% + 쿨다운 10% 제외 (전체의 10%~90% 구간)
-- 개선율 계산:
-  - 낮을수록 좋은 지표(wait, NIC): (A값 - B값) / A값 × 100
-  - 높을수록 좋은 지표(TPS 등): (B값 - A값) / A값 × 100
-
----
-
-## 페이지 본문 구조 (풍부한 버전)
+## 페이지 본문 구조
 
 ### 섹션 1: 테스트 정보
-
+```markdown
 ## 📋 테스트 정보
 
 | 항목 | 내용 |
 |---|---|
 | 테스트 제목 | {title} |
 | 테스트 목적 | {purpose} |
-| SQL Server | {sql_ver} |
-| Windows Server | {win_ver} |
-| AG 모드 | {ag_mode} |
-| 클러스터 | {cluster} |
-| Primary / Secondary | {primary} / {secondary} |
-| 테스트 도구 | {tool} |
-| 분석 방법 | 전체 구간 + 안정구간(워밍업 10% 제외) 통계 분석 |
+| 비교 대상 A | {label_a} |
+| 비교 대상 B | {label_b} |
+| 분석 시나리오 | {scenario_type} |
+| 분석 방법 | 전체 구간 + 안정구간(10%~90%) 통계 분석 |
 | 분석 일시 | {YYYY-MM-DD} |
+| 추가 파일 | {extra_files 또는 없음} |
+```
 
 ---
 
-### 섹션 2: 핵심 지표 비교 (안정구간 평균)
+### 섹션 2: 핵심 KPI 요약
+```markdown
+## 📊 핵심 KPI 요약
 
-## 📊 핵심 지표 비교 (안정구간 평균)
+> **왜 이 차트를 넣었나?**
+> {시나리오에 따라 Claude가 작성 — 예: "4개의 핵심 지표를 막대 그래프로 한눈에 비교합니다.
+> 각 막대 위 퍼센트는 A 대비 B의 개선율이며, 노란 점선은 위험 임계값입니다."}
+>
+> **차트 읽는 법:**
+> {시나리오에 따라 Claude가 작성 — 예: "막대가 높을수록 처리량이 많고, 낮을수록
+> 대기시간이 짧습니다. 개선율이 클수록 효과가 큰 항목입니다."}
+
+![KPI Summary](https://soldierball-cmd.github.io/ag-analysis/charts/chart_04_kpi_summary.png)
 
 | 지표 | A ({label_a}) | B ({label_b}) | 개선율 | 평가 |
 |---|---|---|---|---|
-| HADR avg_wait — 평균 (ms) | {wait_a_avg} | {wait_b_avg} | ▼{w_imp}% | ✅ |
-| HADR avg_wait — P95 (ms) | {wait_a_p95} | {wait_b_p95} | ▼{w_p95_imp}% | ✅ |
-| HADR avg_wait — 최대 (ms) | {wait_a_max} | {wait_b_max} | ▼{w_max_imp}% | ✅ |
-| Theoretical Max TPS — 평균 | {tps_a_avg} | {tps_b_avg} | ▲{t_imp}% | ✅ |
-| Theoretical Max TPS — P95 | {tps_a_p95} | {tps_b_p95} | ▲{t_p95_imp}% | ✅ |
-| Commits/sec — 평균 | {com_a_avg} | {com_b_avg} | ▲{c_imp}% | ✅ |
-| Batch Requests/sec — 평균 | {bat_a_avg} | {bat_b_avg} | ▲{b_imp}% | ✅ |
-| CPU 사용률 — 평균 (%) | {cpu_a_avg} | {cpu_b_avg} | — | ✅ |
-| CPU 사용률 — P95 (%) | {cpu_a_p95} | {cpu_b_p95} | — | ✅ |
-| NIC 사용률 — 평균 (%) | {nic_a_avg} | {nic_b_avg} | ▼{nic_imp}% | ✅ |
-| NIC 사용률 — 최대 (%) | {nic_a_max} | {nic_b_max} | ▼{nic_max_imp}% | ✅ |
-| Disk IOPS — 평균 | {disk_a_avg} | {disk_b_avg} | ▲{d_imp}% | ✅ |
-| Transaction Delay — 평균 (ms) | {tx_a_avg} | {tx_b_avg} | ▲(병목 아님) | ℹ️ |
-| Transaction Delay — P95 (ms) | {tx_a_p95} | {tx_b_p95} | ▲(병목 아님) | ℹ️ |
+| {지표1} — 평균 | {val_a} | {val_b} | {imp}% | {emoji} |
+| {지표2} — P95  | {val_a} | {val_b} | {imp}% | {emoji} |
+| ... | ... | ... | ... | ... |
+```
+
+※ 지표 목록은 시나리오에 따라 Claude가 자동 선정
+※ 개선율 계산: 낮을수록 좋은 지표(wait, latency) → ▼, 높을수록 좋은 지표(TPS) → ▲
 
 ---
 
-### 섹션 3: 심층 분석
+### 섹션 3: 시나리오별 주요 차트 (차트1)
+```markdown
+## {시나리오별 제목 — 예: 🔬 HADR 대기시간 심층 분석}
 
-## 🔬 심층 분석
+> **왜 이 차트를 넣었나?**
+> {Claude가 시나리오에 맞게 작성}
+>
+> **차트 읽는 법:**
+> {Claude가 시나리오에 맞게 작성}
 
-### 1. HADR 대기시간 안정성 분석
+![Chart 01](https://soldierball-cmd.github.io/ag-analysis/charts/chart_01_hadr_wait.png)
 
 | 구분 | A ({label_a}) | B ({label_b}) | 의미 |
 |---|---|---|---|
-| 평균 wait | {wait_a_avg}ms | {wait_b_avg}ms | B가 {w_imp}% 더 낮은 대기시간 |
-| P95 wait | {wait_a_p95}ms | {wait_b_p95}ms | 부하 집중 시에도 B가 안정적 |
-| 표준편차 | {wait_a_stdev} | {wait_b_stdev} | B의 변동성이 더 낮음 |
-| 최대값 | {wait_a_max}ms | {wait_b_max}ms | B에서 최악의 순간도 더 낮음 |
-| 위험임계값(20ms) 초과 | {over_20ms_a}초 | {over_20ms_b}초 | — |
+| 평균 | {avg_a} | {avg_b} | {interpretation} |
+| P95  | {p95_a} | {p95_b} | 부하 집중 시 안정성 |
+| 표준편차 | {stdev_a} | {stdev_b} | 변동성 비교 |
+| 최대값 | {max_a} | {max_b} | 최악 순간 비교 |
 
-> **해석**: {hadr_interpretation}
-
-### 2. 처리량 분석
-
-| 구분 | A ({label_a}) | B ({label_b}) | 비고 |
-|---|---|---|---|
-| TPS 평균 | {tps_a_avg} | {tps_b_avg} | ▲{t_imp}% |
-| TPS 표준편차 | {tps_a_stdev} | {tps_b_stdev} | 변동성 비교 |
-| TPS 최솟값 | {tps_a_min} | {tps_b_min} | B 최솟값도 A 최솟값 상회 여부 |
-| Batch/sec 평균 | {bat_a_avg} | {bat_b_avg} | ▲{b_imp}% |
-| Batch/sec 표준편차 | {bat_a_stdev} | {bat_b_stdev} | 변동성 비교 |
-
-> **해석**: {throughput_interpretation}
-
-### 3. NIC 병목 해소 분석
-
-| 구분 | A ({label_a}) | B ({label_b}) |
-|---|---|---|
-| NIC 사용률 평균 | {nic_a_avg}% | {nic_b_avg}% |
-| NIC 사용률 최대 | {nic_a_max}% | {nic_b_max}% |
-| NIC 사용률 표준편차 | {nic_a_stdev}% | {nic_b_stdev}% |
-| 임계값(70%) 여유 | {nic_a_margin}%p | {nic_b_margin}%p |
-
-> **해석**: {nic_interpretation}
-
-### 4. CPU 리소스 분석
-
-| 구분 | A ({label_a}) | B ({label_b}) |
-|---|---|---|
-| CPU 평균 | {cpu_a_avg}% | {cpu_b_avg}% |
-| CPU P95 | {cpu_a_p95}% | {cpu_b_p95}% |
-| CPU 최대 | {cpu_a_max}% | {cpu_b_max}% |
-| 임계값(85%) 여유 | {cpu_a_margin}%p | {cpu_b_margin}%p |
-
-> **해석**: {cpu_interpretation}
-
-### 5. Transaction Delay 해석
-
-| 구분 | A ({label_a}) | B ({label_b}) | 해석 |
-|---|---|---|---|
-| TX Delay 평균 | {tx_a_avg}ms | {tx_b_avg}ms | 처리량 증가에 비례한 정상 상승 |
-| TX Delay P95 | {tx_a_p95}ms | {tx_b_p95}ms | 병목 지표 아님 |
-| TX Delay 최대 | {tx_a_max}ms | {tx_b_max}ms | 복제 큐 증가 반영 |
-
-> ⚠️ **주의**: Transaction Delay 증가는 성능 저하가 아닙니다. 처리량이 증가하면서 복제 큐가 늘어난 것으로, HADR wait이 오히려 감소한 점이 이를 증명합니다.
+> **해석:** {Claude가 데이터 기반으로 작성}
+```
 
 ---
 
-### 섹션 4: 리소스 임계값 요약
+### 섹션 4: 처리량 비교 (차트2)
+```markdown
+## 📈 처리량 비교
 
-## ✅ 리소스 임계값 요약
-
-| 리소스 | 임계값 | A 최대 | B 최대 | A 상태 | B 상태 |
-|---|---|---|---|---|---|
-| HADR wait | 20ms | {wait_a_max}ms | {wait_b_max}ms | ✅ 정상 | ✅ 정상 |
-| NIC 사용률 | 70% | {nic_a_max}% | {nic_b_max}% | {nic_a_status} | {nic_b_status} |
-| CPU | 85% | {cpu_a_max}% | {cpu_b_max}% | ✅ 정상 | ✅ 정상 |
-
----
-
-### 섹션 5: 차트 이미지
-
-## 📈 차트
-
-![HADR Wait](https://soldierball-cmd.github.io/ag-analysis/charts/chart_01_hadr_wait.png)
+> **왜 이 차트를 넣었나?**
+> {Claude가 시나리오에 맞게 작성}
+>
+> **차트 읽는 법:**
+> {Claude가 시나리오에 맞게 작성}
 
 ![Throughput](https://soldierball-cmd.github.io/ag-analysis/charts/chart_02_throughput.png)
 
-![Batch Requests/sec](https://soldierball-cmd.github.io/ag-analysis/charts/chart_03_batch.png)
+| 구분 | A ({label_a}) | B ({label_b}) | 개선율 |
+|---|---|---|---|
+| {지표1} 평균 | {val_a} | {val_b} | {imp}% |
+| {지표1} 최솟값 | {min_a} | {min_b} | B 최솟값 > A 여부 |
+| {지표1} 표준편차 | {stdev_a} | {stdev_b} | 변동성 비교 |
 
-![CPU & NIC Usage](https://soldierball-cmd.github.io/ag-analysis/charts/chart_04_cpu_nic.png)
+> **해석:** {Claude가 데이터 기반으로 작성}
+```
 
 ---
 
-### 섹션 6: 결론 및 권고사항
+### 섹션 5: 리소스 사용률 (차트3)
+```markdown
+## 🖥️ 리소스 사용률 분석
 
+> **왜 이 차트를 넣었나?**
+> {Claude가 시나리오에 맞게 작성 — 처리량 증가 시 리소스 여유 확인 목적}
+>
+> **차트 읽는 법:**
+> {Claude가 시나리오에 맞게 작성 — 노란 점선이 위험 임계값}
+
+![CPU & NIC](https://soldierball-cmd.github.io/ag-analysis/charts/chart_03_cpu_nic.png)
+
+| 리소스 | 임계값 | A 최대 | B 최대 | A 여유 | B 여유 | 상태 |
+|---|---|---|---|---|---|---|
+| CPU | 85% | {cpu_a_max}% | {cpu_b_max}% | {margin_a}%p | {margin_b}%p | ✅/⚠️/🔴 |
+| NIC 사용률 | 70% | {nic_a_max}% | {nic_b_max}% | {margin_a}%p | {margin_b}%p | ✅/⚠️/🔴 |
+| {기타 리소스} | {threshold} | {val_a} | {val_b} | {margin} | {margin} | ✅/⚠️/🔴 |
+
+> **해석:** {Claude가 데이터 기반으로 작성}
+```
+
+---
+
+### 섹션 6: 심층 분석 (시나리오별 추가 항목)
+```markdown
+## 🔍 심층 분석
+
+{시나리오에 따라 Claude가 추가 항목 구성}
+
+예시 — NIC 비교 시:
+### Transaction Delay 해석
+> ⚠️ TX Delay 증가는 성능 저하가 아닙니다.
+> 처리량 증가에 따른 복제 큐 증가이며, HADR wait 감소가 이를 증명합니다.
+
+예시 — DMV 데이터 있을 시:
+### Wait Stats 비교 (dm_os_wait_stats)
+| wait_type | A 누적 | B 누적 | 변화 |
+
+예시 — 이미지 파일 있을 시:
+### 서버 스펙 / 환경 정보
+{이미지에서 확인된 정보 텍스트로 정리}
+```
+
+---
+
+### 섹션 7: 결론 및 권고사항
+```markdown
 ## 💡 결론 및 권고사항
 
 ### 핵심 요약
-{conclusion_summary}
+{Claude가 실측값 기반으로 작성 — 수치 포함 필수}
+예) "A 대비 B에서 {지표1} {X}% 개선, {지표2} {Y}% 향상 확인"
+
+### 리소스 임계값 최종 확인
+| 리소스 | 임계값 | A 상태 | B 상태 |
+|---|---|---|---|
+| {지표} | {threshold} | ✅/⚠️/🔴 | ✅/⚠️/🔴 |
 
 ### 추가 최적화 권고
-
-| 항목 | 내용 | 기대 효과 |
-|---|---|---|
-| Jumbo Frame (MTU 9000) | 대용량 패킷 처리 효율화 | 네트워크 오버헤드 감소 |
-| RSS/VMQ 활성화 | NIC 멀티코어 분산 처리 | NIC 처리 효율 향상 |
-| HADR 전용 NIC 분리 | 복제 트래픽 격리 | 일반 트래픽과 간섭 제거 |
+{시나리오에 맞는 권고사항 — Claude가 작성}
+예) NIC 비교: Jumbo Frame, RSS/VMQ, HADR 전용 NIC 분리
+예) Disk 비교: RAID 구성 최적화, IO 스케줄러 설정
+예) 버전 비교: 신기능 활성화 검토, 호환성 확인
 
 ### 다음 단계 테스트 권고
-- 비동기 모드 비교 분석 (현재 데이터 준비됨)
-- 25G NIC 업그레이드 효과 측정
-- 부하 증가 테스트: 현재 대비 2x, 3x 부하에서 NIC 병목 재현 가능성 확인
+{시나리오에 맞는 후속 테스트 — Claude가 작성}
+```
 
 ---
 
-## Claude가 직접 Notion 작성 시 절차
+## Claude 작성 원칙 (반드시 준수)
 
-1. CSV 파싱 (bash_tool Python):
-   - PDH CSV: CP949 인코딩
-     컬럼: % Processor Time, Batch Requests/sec, Disk Transfers/sec,
-           Transaction Delay, Bytes Sent to Replica/sec
-   - HADR CSV: scenario 컬럼으로 필터
-     컬럼: avg_wait_per_commit_ms, commits_per_sec, theoretical_max_tps
-   - NIC 사용률 = Bytes Sent to Replica/sec × 8 / NIC대역폭(bps) × 100
-
-2. 통계 계산 (전체 + 안정구간):
-   - 전체: avg, min, max, P95, stdev
-   - 안정구간: rows[int(n*0.1):int(n*0.9)] 슬라이싱
-   - statistics 모듈 사용
-
-3. 인사이트 도출:
-   - HADR wait 변동성(stdev) 비교
-   - TPS 최솟값 비교 (B 최솟값 > A 최솟값 여부)
-   - NIC 임계값 여유 계산
-   - Transaction Delay 증가 = 병목 아님 명시
-
-4. Notion MCP로 새 페이지 생성:
-   - notion-create-pages 사용
-   - parent: page_id = 366dadb5-6b2f-8019-8e65-d0de1d942753
-   - 위 본문 구조 그대로 작성
-
-5. 주의사항:
-   - 차트 base64를 컨텍스트에 올리지 말 것 (컨텍스트 폭발)
-   - 차트는 GitHub Pages URL로 삽입
-   - NOTION_TOKEN 코드 직접 입력 금지
+1. **시나리오 자동 판단**: 파일명 + 제목으로 어떤 분석인지 스스로 파악
+2. **callout(>) 블록 필수**: 모든 차트 앞에 "왜 이 차트인지" + "읽는 법" 설명
+3. **통계는 실측 기반**: avg/P95/max/stdev 모두 계산, 추정값 사용 금지
+4. **전체 + 안정구간 분리**: 워밍업 10% 제외한 안정구간 별도 분석
+5. **인사이트 도출**: 단순 수치 나열이 아닌 의미 해석 포함
+6. **TX Delay 처리**: NIC/복제 관련 시나리오에서는 병목 아님 반드시 명시
+7. **차트 base64 금지**: 컨텍스트에 올리지 말고 GitHub Pages URL 사용
+8. **새 페이지 생성**: 기존 페이지 수정 금지, 매번 새로 생성
