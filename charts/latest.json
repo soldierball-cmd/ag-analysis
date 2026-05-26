@@ -1,0 +1,35 @@
+{
+  "subdir": "20260526_140432_동기모드_1G_NIC_vs_비동기모드_1G_NIC",
+  "mode": "동기모드_1G_NIC_vs_비동기모드_1G_NIC",
+  "timestamp": "20260526_140432",
+  "gh_base": "https://soldierball-cmd.github.io/ag-analysis/charts/20260526_140432_동기모드_1G_NIC_vs_비동기모드_1G_NIC",
+  "has_hadr": true,
+  "chart_files": {
+    "f01": "chart_01_hadr_wait.png",
+    "f02": "chart_02_tps_commits_batch.png",
+    "f03": "chart_03_cpu_nic.png",
+    "f04": "chart_04_kpi_summary.png"
+  },
+  "stats": {
+    "wait_1g": 0.721,
+    "wait_10g": 0.0,
+    "tps_1g": 1389.0,
+    "tps_10g": 0,
+    "com_1g": 22873.0,
+    "com_10g": 0.0,
+    "bat_1g": 1597.0,
+    "bat_10g": 6198.0,
+    "cpu_1g": 8.2,
+    "cpu_10g": 21.9,
+    "cpu_1g_max": 19.0,
+    "cpu_10g_max": 33.7,
+    "nic_1g": 24.7,
+    "nic_10g": 65.7,
+    "nic_1g_max": 49.7,
+    "nic_10g_max": 100.0
+  },
+  "scenario": {
+    "label_a": "동기모드_1G_NIC",
+    "label_b": "비동기모드_1G_NIC"
+  }
+}
