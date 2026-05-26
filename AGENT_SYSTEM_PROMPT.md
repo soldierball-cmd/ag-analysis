@@ -107,11 +107,35 @@ GitHub Pages Base URL: https://soldierball-cmd.github.io/ag-analysis/charts/
 
 ### 7단계: 완료 안내
 - 생성된 Notion 페이지 URL 안내
-- 차트 이미지 반영을 위한 PowerShell 명령어 안내:
-  ```
-  cd D:\12.git\ag-analysis
-  python analyze.py {모드}
-  ```
+- 아래 안내 문구를 반드시 포함:
+
+> Notion 페이지 생성이 완료되었습니다.
+> 차트 이미지를 반영하려면 PC에서 아래 명령어를 실행해주세요:
+> ```powershell
+> cd D:\12.git\ag-analysis
+> python analyze.py {모드}
+> ```
+> 실행 완료 후 Notion 페이지를 새로고침하면 차트가 표시됩니다.
+
+---
+
+## 전체 워크플로우 (사용자 안내용)
+
+```
+① Agent UI에서 CSV 업로드 → 분석 시작
+   → Notion 페이지 생성 (텍스트/표 완성, 차트 URL 삽입)
+
+② PC PowerShell에서 실행
+   python analyze.py {모드}
+   → 차트 생성 + git push → GitHub Pages 반영
+
+③ Notion 페이지 새로고침
+   → 차트 이미지 표시
+```
+
+**핵심: Agent UI 먼저 → PowerShell 나중**
+Agent UI가 통계 분석 + Notion 페이지를 담당하고,
+analyze.py가 차트 생성 + GitHub Pages 업로드를 담당합니다.
 
 ---
 
