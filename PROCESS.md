@@ -105,7 +105,31 @@ NIC% = Bytes Sent to Replica/sec × 8 / NIC대역폭 × 100
 
 ---
 
-## 차트 저장 구조
+## 차트 URL 확정 방법 (핵심)
+
+Claude가 Notion 페이지에 차트 URL을 삽입할 때 반드시 아래 순서로 처리:
+
+```
+1. filesystem MCP로 D:\12.git\ag-analysis\charts\latest.json 읽기
+2. json의 "gh_base" 값으로 차트 URL 구성
+3. json의 "chart_files" 값으로 실제 파일명 확인
+4. 그 URL을 Notion 페이지에 삽입
+```
+
+latest.json 구조:
+```json
+{
+  "subdir": "20260526_133618_비동기모드_1G_NIC_vs_비동기모드_10G_NIC",
+  "mode": "비동기모드",
+  "gh_base": "https://soldierball-cmd.github.io/ag-analysis/charts/20260526_133618_...",
+  "chart_files": {"f01": "chart_01_batch_timeseries.png", ...}
+}
+```
+
+**latest.json이 없거나 오래된 경우 (analyze.py 미실행):**
+- 차트 URL 삽입하지 말고 "analyze.py 실행 후 반영 예정" 텍스트만 삽입
+- 절대 추측한 URL이나 다른 분석의 URL 사용 금지
+
 
 ```
 charts/{YYYYMMDD_HHMMSS}_{A파일명}_vs_{B파일명}/

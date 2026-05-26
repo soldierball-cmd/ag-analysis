@@ -1,18 +1,25 @@
 """
 AG 성능 비교 분석 스크립트 — PC 직접 실행용
-사용법: python analyze.py 동기모드
-        python analyze.py 비동기모드
 
-환경변수 설정:
+사용법:
+  # 모드 기반 (기존 방식 — 동일 모드 내 1G/10G 비교)
+  python analyze.py 동기모드
+  python analyze.py 비동기모드
+
+  # 파일 직접 지정 (범용 — 어떤 조합이든 가능)
+  python analyze.py --a 동기모드_1G_NIC.csv --b 비동기모드_1G_NIC.csv
+  python analyze.py --a 동기모드_1G_NIC.csv --b 비동기모드_1G_NIC.csv --hadr hadr_sync_commit_monitor.csv
+  python analyze.py --a data/A.csv --b data/B.csv  (경로 직접 지정도 가능)
+
+환경변수:
   Windows PowerShell: $env:NOTION_TOKEN = "ntn_xxx..."
-  영구 설정:          setx NOTION_TOKEN "ntn_xxx..."  (새 터미널 필요)
+  영구 설정:          setx NOTION_TOKEN "ntn_xxx..."
 
 차트 저장 구조:
-  charts/{YYYYMMDD_HHMMSS}_{모드}_{A파일명}_vs_{B파일명}/
-    - has_hadr=True:  chart_01_hadr_wait.png / chart_02_tps_commits_batch.png
-    - has_hadr=False: chart_01_batch_timeseries.png / chart_02_batch_cpu_disk.png
-    - 공통:           chart_03_cpu_nic.png / chart_04_kpi_summary.png
-  → 분석마다 고유 폴더 생성, 덮어쓰기 없음
+  charts/{YYYYMMDD_HHMMSS}_{A파일명}_vs_{B파일명}/
+    has_hadr=True:  chart_01_hadr_wait.png / chart_02_tps_commits_batch.png
+    has_hadr=False: chart_01_batch_timeseries.png / chart_02_batch_cpu_disk.png
+    공통:           chart_03_cpu_nic.png / chart_04_kpi_summary.png
 """
 import sys, os, csv, io, json, subprocess, mimetypes
 import urllib.request, urllib.error
@@ -23,14 +30,80 @@ PARENT_PAGE_ID = "366dadb5-6b2f-8019-8e65-d0de1d942753"
 BASE_DIR       = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR       = os.path.join(BASE_DIR, "data")
 GH_BASE_ROOT   = "https://soldierball-cmd.github.io/ag-analysis/charts"
+TIMESTAMP      = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-MODE      = sys.argv[1] if len(sys.argv) > 1 else "동기모드"
-TIMESTAMP = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# SUBDIR / CHARTS_DIR / GH_BASE 는 main()에서 파일명 확인 후 확정
 SUBDIR     = None
 CHARTS_DIR = None
 GH_BASE    = None
+
+
+# ═══════════════════════════════════════════════════════════
+#  인수 파싱
+# ═══════════════════════════════════════════════════════════
+def parse_args():
+    """
+    반환: (mode_label, path_a, path_b, path_hadr, nic_bps_a, nic_bps_b)
+    """
+    args = sys.argv[1:]
+
+    # --a / --b 직접 지정 모드
+    if "--a" in args and "--b" in args:
+        ia = args.index("--a"); ib = args.index("--b")
+        fa = args[ia + 1]; fb = args[ib + 1]
+        # 상대 경로이면 data/ 폴더 기준으로 처리
+        if not os.path.isabs(fa) and not os.path.exists(fa):
+            fa = os.path.join(DATA_DIR, fa)
+        if not os.path.isabs(fb) and not os.path.exists(fb):
+            fb = os.path.join(DATA_DIR, fb)
+
+        # --hadr 지정 여부
+        path_hadr = None
+        if "--hadr" in args:
+            ih = args.index("--hadr")
+            ph = args[ih + 1]
+            if not os.path.isabs(ph) and not os.path.exists(ph):
+                ph = os.path.join(DATA_DIR, ph)
+            path_hadr = ph
+        else:
+            # hadr CSV 자동 탐색
+            for f in os.listdir(DATA_DIR):
+                if "hadr_sync_commit" in f.lower():
+                    path_hadr = os.path.join(DATA_DIR, f)
+                    break
+
+        # NIC 대역폭: 파일명에서 자동 판별
+        def detect_bps(name):
+            nl = name.lower()
+            if "10g" in nl: return 10e9
+            if "25g" in nl: return 25e9
+            return 1e9  # 기본 1G
+
+        bps_a = detect_bps(os.path.basename(fa))
+        bps_b = detect_bps(os.path.basename(fb))
+
+        # 모드 레이블: 파일명 조합
+        label_a = os.path.splitext(os.path.basename(fa))[0]
+        label_b = os.path.splitext(os.path.basename(fb))[0]
+        mode_label = f"{label_a}_vs_{label_b}"
+        return mode_label, fa, fb, path_hadr, bps_a, bps_b
+
+    # 기존 모드 기반 방식
+    mode = args[0] if args else "동기모드"
+    path_a = path_b = path_hadr = None
+    for f in os.listdir(DATA_DIR):
+        fl = f.lower()
+        in_mode = (
+            (mode == "동기모드"   and "동기모드"   in f and "비동기" not in f) or
+            (mode == "비동기모드" and "비동기모드" in f)
+        )
+        if in_mode:
+            if   "1g"  in fl and "hadr" not in fl: path_a = os.path.join(DATA_DIR, f)
+            elif "10g" in fl and "hadr" not in fl: path_b = os.path.join(DATA_DIR, f)
+        if "hadr_sync_commit" in fl:
+            path_hadr = os.path.join(DATA_DIR, f)
+
+    bps_a = 1e9; bps_b = 10e9
+    return mode, path_a, path_b, path_hadr, bps_a, bps_b
 
 
 # ═══════════════════════════════════════════════════════════
@@ -47,7 +120,6 @@ def avg(lst):
     return sum(lst) / len(lst) if lst else 0
 
 def pct(a, b, lower_is_better=False):
-    """나누기 0 방지 개선율 → 문자열"""
     if a == 0: return "N/A"
     val   = round((a - b) / a * 100, 1) if lower_is_better else round((b - a) / a * 100, 1)
     arrow = "▼" if lower_is_better else "▲"
@@ -56,37 +128,16 @@ def pct(a, b, lower_is_better=False):
     else:
         return f"{arrow}{abs(val)}%" if b > a else f"▼{abs(val)}% (감소)"
 
-
-# ═══════════════════════════════════════════════════════════
-#  CSV 파일 탐색
-# ═══════════════════════════════════════════════════════════
-def find_csv():
-    files = {}
-    for f in os.listdir(DATA_DIR):
-        fl = f.lower()
-        in_mode = (
-            (MODE == "동기모드"   and "동기모드"   in f and "비동기" not in f) or
-            (MODE == "비동기모드" and "비동기모드" in f)
-        )
-        if in_mode:
-            if   "1g"  in fl and "hadr" not in fl: files["pdh_1g"]  = os.path.join(DATA_DIR, f)
-            elif "10g" in fl and "hadr" not in fl: files["pdh_10g"] = os.path.join(DATA_DIR, f)
-        if "hadr_sync_commit" in fl:
-            files["hadr"] = os.path.join(DATA_DIR, f)
-    for f in os.listdir(DATA_DIR):
-        if "스펙" in f or "spec" in f.lower():
-            if os.path.splitext(f)[1].lower() in (".png", ".jpg", ".jpeg", ".webp"):
-                files["spec_img"] = os.path.join(DATA_DIR, f)
-    return files
-
-
-def make_subdir(files):
-    """파일명 기반으로 분석별 고유 폴더명 생성"""
-    a_name = os.path.splitext(os.path.basename(files.get("pdh_1g",  "A")))[0]
-    b_name = os.path.splitext(os.path.basename(files.get("pdh_10g", "B")))[0]
-    # 폴더명에 사용 불가한 문자 제거
+def make_subdir(label_a, label_b):
     safe = lambda s: s.replace(" ", "_").replace("/", "_").replace("\\", "_")
-    return f"{TIMESTAMP}_{safe(a_name)}_vs_{safe(b_name)}"
+    return f"{TIMESTAMP}_{safe(label_a)}_vs_{safe(label_b)}"
+
+def find_spec_img():
+    for f in os.listdir(DATA_DIR):
+        if ("스펙" in f or "spec" in f.lower()) and \
+           os.path.splitext(f)[1].lower() in (".png", ".jpg", ".jpeg", ".webp"):
+            return os.path.join(DATA_DIR, f)
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -108,7 +159,9 @@ def load_pdh(path, nic_bps):
     for r in rows:
         rb  = fv(r.get(replica_col, "")) or 0
         nb  = fv(r.get(bytes_col,   "")) or 0
-        nic = round((rb if nic_bps == 10e9 else nb) * 8 / nic_bps * 100, 4)
+        # NIC 사용률: replica 트래픽이 있으면 우선, 없으면 total 사용
+        raw = rb if rb > 0 else nb
+        nic = round(raw * 8 / nic_bps * 100, 4)
         result.append({
             "cpu":   fv(r.get(cpu_col,   "")),
             "nic":   nic,
@@ -118,28 +171,33 @@ def load_pdh(path, nic_bps):
         })
     return result
 
-def load_hadr(path, scenario):
+def load_hadr_for(path, label_a, label_b):
+    """HADR CSV에서 A/B 레이블로 데이터 필터링 (유연한 매칭)"""
+    if not path or not os.path.exists(path):
+        return [], []
     with open(path, "rb") as f:
         rows = list(csv.DictReader(io.StringIO(f.read().decode("cp949"))))
-    return [r for r in rows if r.get("scenario", "") == scenario]
+    scenarios = [r.get("scenario", "").strip() for r in rows]
+
+    def best_match(label, scenarios):
+        # 정확히 일치하는 것 우선
+        exact = [r for r in rows if r.get("scenario","").strip() == label]
+        if exact: return exact
+        # 1G/10G 키워드 포함 여부로 fallback
+        la = label.lower()
+        return [r for r in rows if all(k in r.get("scenario","").lower() for k in
+                [x for x in ["1g","10g","동기","비동기"] if x in la])]
+
+    ha = best_match(label_a, scenarios)
+    hb = best_match(label_b, scenarios)
+    print(f"  HADR 매칭: A({label_a})={len(ha)}행, B({label_b})={len(hb)}행")
+    return ha, hb
 
 
 # ═══════════════════════════════════════════════════════════
 #  차트 생성
-#
-#  has_hadr=True  (동기모드 등, HADR wait > 0)
-#    chart_01_hadr_wait.png          — HADR wait 시계열 + 분포
-#    chart_02_tps_commits_batch.png  — TPS / Commits / Batch
-#    chart_03_cpu_nic.png            — CPU + NIC  (항상 PDH)
-#    chart_04_kpi_summary.png        — HADR wait / TPS / Batch / NIC
-#
-#  has_hadr=False (비동기모드 등, HADR wait = 0)
-#    chart_01_batch_timeseries.png   — Batch/sec 시계열 + 분포 (PDH)
-#    chart_02_batch_cpu_disk.png     — Batch / CPU / Disk     (PDH)
-#    chart_03_cpu_nic.png            — CPU + NIC  (항상 PDH)
-#    chart_04_kpi_summary.png        — Batch / CPU / Disk / NIC (PDH)
 # ═══════════════════════════════════════════════════════════
-def make_charts(d1, d10, h1, h10, has_hadr):
+def make_charts(da, db, ha, hb, has_hadr, label_a, label_b):
     global CHARTS_DIR, GH_BASE
     try:
         import matplotlib
@@ -147,7 +205,7 @@ def make_charts(d1, d10, h1, h10, has_hadr):
         import matplotlib.pyplot as plt
         import matplotlib.gridspec as gridspec
 
-        C1   = "#ff6b6b"; C10  = "#4e7cff"
+        CA   = "#ff6b6b"; CB   = "#4e7cff"
         BG   = "#1a1d27"; CARD = "#22263a"
         GRID = "#2e3250"; TXT  = "#e8eaf6"; TXT2 = "#9fa8c7"
         YEL  = "#ffd166"; GRN  = "#06d6a0"
@@ -168,34 +226,35 @@ def make_charts(d1, d10, h1, h10, has_hadr):
             plt.savefig(path, dpi=150, bbox_inches="tight", facecolor=BG)
             plt.close()
             print(f"  {fname} OK")
-            return fname
 
-        # ── PDH 데이터 (항상 사용 가능) ─────────────────
-        b1   = clean([d["batch"] for d in d1]);  b10  = clean([d["batch"] for d in d10])
-        cpu1 = clean([d["cpu"]   for d in d1]);  cpu10= clean([d["cpu"]   for d in d10])
-        nic1 = [d["nic"] for d in d1];           nic10= [d["nic"] for d in d10]
-        dsk1 = clean([d["disk"]  for d in d1]);  dsk10= clean([d["disk"]  for d in d10])
+        # PDH 데이터
+        ba   = clean([d["batch"] for d in da]); bb  = clean([d["batch"] for d in db])
+        cpua = clean([d["cpu"]   for d in da]); cpub= clean([d["cpu"]   for d in db])
+        nica = [d["nic"] for d in da];          nicb= [d["nic"] for d in db]
+        dska = clean([d["disk"]  for d in da]); dskb= clean([d["disk"]  for d in db])
 
-        ab1   = round(avg(b1),   0); ab10  = round(avg(b10),   0)
-        acpu1 = round(avg(cpu1), 1); acpu10= round(avg(cpu10), 1)
-        anic1 = round(avg(nic1), 1); anic10= round(avg(nic10), 1)
-        adsk1 = round(avg(dsk1), 0); adsk10= round(avg(dsk10), 0)
+        aba   = round(avg(ba),   0); abb   = round(avg(bb),   0)
+        acpua = round(avg(cpua), 1); acpub = round(avg(cpub), 1)
+        anica = round(avg(nica), 1); anicb = round(avg(nicb), 1)
+        adska = round(avg(dska), 0); adskb = round(avg(dskb), 0)
 
-        # ── HADR 데이터 (has_hadr=True일 때만 사용) ─────
+        # HADR 데이터
         if has_hadr:
-            w1  = clean([fv(r["avg_wait_per_commit_ms"]) for r in h1])
-            w10 = clean([fv(r["avg_wait_per_commit_ms"]) for r in h10])
-            c1  = clean([fv(r["commits_per_sec"])        for r in h1])
-            c10 = clean([fv(r["commits_per_sec"])        for r in h10])
-            t1  = clean([fv(r["theoretical_max_tps"])    for r in h1])
-            t10 = clean([fv(r["theoretical_max_tps"])    for r in h10])
-            aw1 = round(avg(w1), 3); aw10 = round(avg(w10), 3)
-            at1 = round(avg(t1), 0); at10 = round(avg(t10), 0)
-            ac1 = round(avg(c1), 0); ac10 = round(avg(c10), 0)
+            wa  = clean([fv(r["avg_wait_per_commit_ms"]) for r in ha])
+            wb  = clean([fv(r["avg_wait_per_commit_ms"]) for r in hb])
+            ca  = clean([fv(r["commits_per_sec"])        for r in ha])
+            cb  = clean([fv(r["commits_per_sec"])        for r in hb])
+            ta  = clean([fv(r["theoretical_max_tps"])    for r in ha])
+            tb  = clean([fv(r["theoretical_max_tps"])    for r in hb])
+            awa = round(avg(wa),3); awb = round(avg(wb),3)
+            ata = round(avg(ta),0); atb = round(avg(tb),0)
+            aca = round(avg(ca),0); acb = round(avg(cb),0)
 
-        # ════════════════════════════════════════════════
-        # 차트 01
-        # ════════════════════════════════════════════════
+        # 짧은 레이블 (차트 범례용)
+        short_a = label_a.replace("_NIC","").replace("모드","")[-12:]
+        short_b = label_b.replace("_NIC","").replace("모드","")[-12:]
+
+        # ── 차트 01 ─────────────────────────────────────
         fig = plt.figure(figsize=(14, 8), facecolor=BG)
         fig.patch.set_facecolor(BG)
         gs  = gridspec.GridSpec(2, 2, figure=fig, hspace=0.5, wspace=0.35)
@@ -204,174 +263,160 @@ def make_charts(d1, d10, h1, h10, has_hadr):
         ax3 = fig.add_subplot(gs[1, 1])
 
         if has_hadr:
-            v1s, v10s   = w1, w10
-            avg1, avg10 = aw1, aw10
-            unit        = "ms"
-            c1_ttl      = "HADR avg_wait_per_commit_ms"
-            d1_ttl      = "1G — wait distribution"
-            d10_ttl     = "10G — wait distribution"
-            imp_txt     = f"Improved {round((aw1-aw10)/aw1*100,1)}%" if aw1 else "N/A"
+            vs_a, vs_b  = wa, wb
+            avg_a, avg_b= awa, awb
+            unit = "ms"
+            ttl  = f"HADR avg_wait_per_commit_ms  [{short_a} vs {short_b}]"
+            d_a  = f"{short_a} — wait dist"
+            d_b  = f"{short_b} — wait dist"
+            imp  = f"Diff {round((awa-awb)/awa*100,1)}%" if awa else "N/A"
             ax1.axhline(20, color=YEL, lw=1.2, ls="--", alpha=0.8, label="Danger: 20ms")
-            ax1.axhline(10, color=YEL, lw=0.8, ls=":",  alpha=0.4, label="Caution: 10ms")
             fname01 = "chart_01_hadr_wait.png"
         else:
-            v1s, v10s   = b1, b10
-            avg1, avg10 = ab1, ab10
-            unit        = "req/sec"
-            c1_ttl      = "Batch Requests/sec  [ASYNC: HADR wait=0ms, NIC not bottleneck]"
-            d1_ttl      = "1G — Batch/sec distribution"
-            d10_ttl     = "10G — Batch/sec distribution"
-            diff        = round((ab10 - ab1) / ab1 * 100, 1) if ab1 else 0
-            imp_txt     = f"Diff {diff:+.1f}%  (NIC는 처리량 병목 아님)"
-            fname01     = "chart_01_batch_timeseries.png"
+            vs_a, vs_b  = ba, bb
+            avg_a, avg_b= aba, abb
+            unit = "req/sec"
+            ttl  = f"Batch Requests/sec  [{short_a} vs {short_b}]"
+            d_a  = f"{short_a} — Batch dist"
+            d_b  = f"{short_b} — Batch dist"
+            diff = round((abb-aba)/aba*100,1) if aba else 0
+            imp  = f"Diff {diff:+.1f}%"
+            fname01 = "chart_01_batch_timeseries.png"
 
-        ax1.fill_between(range(len(v1s)),  v1s,  alpha=0.15, color=C1)
-        ax1.fill_between(range(len(v10s)), v10s, alpha=0.15, color=C10)
-        ax1.plot(v1s,  color=C1,  lw=1.5, label=f"1G NIC  (avg {avg1})")
-        ax1.plot(v10s, color=C10, lw=1.5, label=f"10G NIC (avg {avg10})")
-        ax1.axhline(avg1,  color=C1,  lw=0.8, ls="--", alpha=0.4)
-        ax1.axhline(avg10, color=C10, lw=0.8, ls="--", alpha=0.4)
-        style(ax1, c1_ttl, ylabel=unit)
+        ax1.fill_between(range(len(vs_a)), vs_a, alpha=0.15, color=CA)
+        ax1.fill_between(range(len(vs_b)), vs_b, alpha=0.15, color=CB)
+        ax1.plot(vs_a, color=CA, lw=1.5, label=f"{short_a} (avg {avg_a})")
+        ax1.plot(vs_b, color=CB, lw=1.5, label=f"{short_b} (avg {avg_b})")
+        ax1.axhline(avg_a, color=CA, lw=0.8, ls="--", alpha=0.4)
+        ax1.axhline(avg_b, color=CB, lw=0.8, ls="--", alpha=0.4)
+        style(ax1, ttl, ylabel=unit)
         ax1.legend(facecolor=CARD, labelcolor=TXT, fontsize=9, framealpha=0.8, loc="upper right")
-        ax1.text(0.02, 0.92, imp_txt, transform=ax1.transAxes, color=GRN, fontsize=10, fontweight="bold")
+        ax1.text(0.02, 0.92, imp, transform=ax1.transAxes, color=GRN, fontsize=10, fontweight="bold")
 
-        ax2.hist(v1s,  bins=25, color=C1,  alpha=0.85, edgecolor=BG, lw=0.3)
-        ax2.axvline(avg1,  color="white", lw=1.5, ls="--", label=f"avg {avg1}")
-        style(ax2, d1_ttl, xlabel=unit, ylabel="count")
+        ax2.hist(vs_a, bins=25, color=CA, alpha=0.85, edgecolor=BG, lw=0.3)
+        ax2.axvline(avg_a, color="white", lw=1.5, ls="--", label=f"avg {avg_a}")
+        style(ax2, d_a, xlabel=unit, ylabel="count")
         ax2.legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
 
-        ax3.hist(v10s, bins=25, color=C10, alpha=0.85, edgecolor=BG, lw=0.3)
-        ax3.axvline(avg10, color="white", lw=1.5, ls="--", label=f"avg {avg10}")
-        style(ax3, d10_ttl, xlabel=unit, ylabel="count")
+        ax3.hist(vs_b, bins=25, color=CB, alpha=0.85, edgecolor=BG, lw=0.3)
+        ax3.axvline(avg_b, color="white", lw=1.5, ls="--", label=f"avg {avg_b}")
+        style(ax3, d_b, xlabel=unit, ylabel="count")
         ax3.legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
         save(fname01)
 
-        # ════════════════════════════════════════════════
-        # 차트 02
-        # ════════════════════════════════════════════════
+        # ── 차트 02 ─────────────────────────────────────
         fig, axes = plt.subplots(1, 3, figsize=(16, 5), facecolor=BG)
         fig.patch.set_facecolor(BG)
 
         if has_hadr:
-            panels2  = [
-                (axes[0], t1,   t10,   "Theoretical Max TPS", "TPS"),
-                (axes[1], c1,   c10,   "Commits/sec",         "commits/sec"),
-                (axes[2], b1,   b10,   "Batch Requests/sec",  "req/sec"),
+            panels = [
+                (axes[0], ta, tb, "Theoretical Max TPS", "TPS"),
+                (axes[1], ca, cb, "Commits/sec",         "commits/sec"),
+                (axes[2], ba, bb, "Batch Requests/sec",  "req/sec"),
             ]
-            suptitle2 = "Throughput Comparison — 1G vs 10G NIC"
-            fname02   = "chart_02_tps_commits_batch.png"
+            sup2   = f"Throughput — {short_a} vs {short_b}"
+            fname02= "chart_02_tps_commits_batch.png"
         else:
-            panels2  = [
-                (axes[0], b1,   b10,   "Batch Requests/sec",  "req/sec"),
-                (axes[1], cpu1, cpu10, "CPU Usage (%)",        "%"),
-                (axes[2], dsk1, dsk10, "Disk IOPS",            "IOPS"),
+            panels = [
+                (axes[0], ba,   bb,   "Batch Requests/sec", "req/sec"),
+                (axes[1], cpua, cpub, "CPU Usage (%)",      "%"),
+                (axes[2], dska, dskb, "Disk IOPS",          "IOPS"),
             ]
-            suptitle2 = "Performance Comparison (ASYNC Mode) — 1G vs 10G NIC"
-            fname02   = "chart_02_batch_cpu_disk.png"
+            sup2   = f"Performance — {short_a} vs {short_b}"
+            fname02= "chart_02_batch_cpu_disk.png"
 
-        for ax, va, vb, lbl, unit in panels2:
-            aa = round(avg(va), 0); ab_ = round(avg(vb), 0)
-            ax.plot(va, color=C1,  lw=1.5, alpha=0.9, label=f"1G  ({int(aa):,})")
-            ax.plot(vb, color=C10, lw=1.5, alpha=0.9, label=f"10G ({int(ab_):,})")
-            ax.fill_between(range(len(va)), va, alpha=0.08, color=C1)
-            ax.fill_between(range(len(vb)), vb, alpha=0.08, color=C10)
+        for ax, va, vb, lbl, unit in panels:
+            aa_ = round(avg(va),0); ab_ = round(avg(vb),0)
+            ax.plot(va, color=CA, lw=1.5, alpha=0.9, label=f"{short_a} ({int(aa_):,})")
+            ax.plot(vb, color=CB, lw=1.5, alpha=0.9, label=f"{short_b} ({int(ab_):,})")
+            ax.fill_between(range(len(va)), va, alpha=0.08, color=CA)
+            ax.fill_between(range(len(vb)), vb, alpha=0.08, color=CB)
             style(ax, lbl, ylabel=unit)
             ax.legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
-            i     = round((ab_ - aa) / aa * 100, 1) if aa != 0 else 0
-            i_txt = f"+{i}%" if aa != 0 else "N/A"
-            ax.text(0.05, 0.93, i_txt, transform=ax.transAxes, color=GRN, fontsize=10, fontweight="bold")
+            i = round((ab_-aa_)/aa_*100,1) if aa_ else 0
+            ax.text(0.05, 0.93, f"{i:+.1f}%" if aa_ else "N/A",
+                    transform=ax.transAxes, color=GRN, fontsize=10, fontweight="bold")
 
-        plt.suptitle(suptitle2, color=TXT, fontsize=13, fontweight="bold", y=1.02)
+        plt.suptitle(sup2, color=TXT, fontsize=13, fontweight="bold", y=1.02)
         plt.tight_layout()
         save(fname02)
 
-        # ════════════════════════════════════════════════
-        # 차트 03 — CPU + NIC (항상 PDH)
-        # ════════════════════════════════════════════════
+        # ── 차트 03 — CPU + NIC ──────────────────────────
         fig, axes = plt.subplots(1, 2, figsize=(14, 5), facecolor=BG)
         fig.patch.set_facecolor(BG)
 
-        axes[0].plot(cpu1,  color=C1,  lw=1.5, label=f"1G  (avg {acpu1}%)")
-        axes[0].plot(cpu10, color=C10, lw=1.5, label=f"10G (avg {acpu10}%)")
-        axes[0].fill_between(range(len(cpu1)),  cpu1,  alpha=0.1, color=C1)
-        axes[0].fill_between(range(len(cpu10)), cpu10, alpha=0.1, color=C10)
+        axes[0].plot(cpua, color=CA, lw=1.5, label=f"{short_a} (avg {acpua}%)")
+        axes[0].plot(cpub, color=CB, lw=1.5, label=f"{short_b} (avg {acpub}%)")
+        axes[0].fill_between(range(len(cpua)), cpua, alpha=0.1, color=CA)
+        axes[0].fill_between(range(len(cpub)), cpub, alpha=0.1, color=CB)
         axes[0].axhline(85, color=YEL, lw=1.2, ls="--", label="Danger: 85%")
         axes[0].axhspan(85, 100, alpha=0.05, color=YEL)
         axes[0].set_ylim(0, 100)
         style(axes[0], "CPU Usage (%)", ylabel="%")
         axes[0].legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
-        mx_cpu = max(cpu10) if cpu10 else 0
-        axes[0].text(0.05, 0.93, f"Max {mx_cpu:.1f}%  ({round(85-mx_cpu,1)}%p margin)",
+        mx = max(cpub) if cpub else 0
+        axes[0].text(0.05, 0.93, f"B Max {mx:.1f}%  ({round(85-mx,1)}%p margin)",
                      transform=axes[0].transAxes, color=GRN, fontsize=9)
 
-        axes[1].plot(nic1,  color=C1,  lw=1.5, label=f"1G  (avg {anic1}%)")
-        axes[1].plot(nic10, color=C10, lw=1.5, label=f"10G (avg {anic10}%)")
-        axes[1].fill_between(range(len(nic1)),  nic1,  alpha=0.15, color=C1)
-        axes[1].fill_between(range(len(nic10)), nic10, alpha=0.10, color=C10)
+        axes[1].plot(nica, color=CA, lw=1.5, label=f"{short_a} (avg {anica}%)")
+        axes[1].plot(nicb, color=CB, lw=1.5, label=f"{short_b} (avg {anicb}%)")
+        axes[1].fill_between(range(len(nica)), nica, alpha=0.15, color=CA)
+        axes[1].fill_between(range(len(nicb)), nicb, alpha=0.10, color=CB)
         axes[1].axhline(70, color=YEL, lw=1.2, ls="--", label="Danger: 70%")
-        if nic1: axes[1].axhspan(70, max(nic1) + 5, alpha=0.05, color=YEL)
+        if nica: axes[1].axhspan(70, max(nica)+5, alpha=0.05, color=YEL)
         style(axes[1], "NIC Usage (%)", ylabel="%")
         axes[1].legend(facecolor=CARD, labelcolor=TXT, fontsize=9)
-        ni_txt = f"-{round((anic1-anic10)/anic1*100,1)}%  ({anic1}% → {anic10}%)" if anic1 else "N/A"
-        axes[1].text(0.05, 0.93, ni_txt, transform=axes[1].transAxes, color=GRN, fontsize=9)
+        axes[1].text(0.05, 0.93, f"A:{anica}% B:{anicb}%",
+                     transform=axes[1].transAxes, color=GRN, fontsize=9)
 
-        plt.suptitle("Resource Usage — CPU & NIC", color=TXT, fontsize=13, fontweight="bold", y=1.02)
+        plt.suptitle(f"Resource — {short_a} vs {short_b}", color=TXT, fontsize=13, fontweight="bold", y=1.02)
         plt.tight_layout()
         save("chart_03_cpu_nic.png")
 
-        # ════════════════════════════════════════════════
-        # 차트 04 — KPI 요약 막대
-        # ════════════════════════════════════════════════
+        # ── 차트 04 — KPI 막대 ──────────────────────────
         fig, axes = plt.subplots(1, 4, figsize=(16, 5), facecolor=BG)
         fig.patch.set_facecolor(BG)
 
         if has_hadr:
             kpis = [
-                ("HADR wait\navg (ms)",  aw1,    aw10,    True,  20,   "{:.3f}"),
-                ("Theoretical\nMax TPS", at1,    at10,    False, None, "{:,.0f}"),
-                ("Batch\nReq/sec",       ab1,    ab10,    False, None, "{:,.0f}"),
-                ("NIC\nUsage (%)",       anic1,  anic10,  True,  70,   "{:.1f}"),
+                ("HADR wait\navg (ms)",  awa,   awb,   True,  20,   "{:.3f}"),
+                ("Theoretical\nMax TPS", ata,   atb,   False, None, "{:,.0f}"),
+                ("Batch\nReq/sec",       aba,   abb,   False, None, "{:,.0f}"),
+                ("NIC\nUsage (%)",       anica, anicb, True,  70,   "{:.1f}"),
             ]
         else:
             kpis = [
-                ("Batch\nReq/sec",       ab1,    ab10,    False, None, "{:,.0f}"),
-                ("CPU\nUsage (%)",       acpu1,  acpu10,  False, 85,   "{:.1f}"),
-                ("Disk\nIOPS",           adsk1,  adsk10,  False, None, "{:,.0f}"),
-                ("NIC\nUsage (%)",       anic1,  anic10,  True,  70,   "{:.1f}"),
+                ("Batch\nReq/sec",       aba,   abb,   False, None, "{:,.0f}"),
+                ("CPU\nUsage (%)",       acpua, acpub, False, 85,   "{:.1f}"),
+                ("Disk\nIOPS",           adska, adskb, False, None, "{:,.0f}"),
+                ("NIC\nUsage (%)",       anica, anicb, True,  70,   "{:.1f}"),
             ]
 
-        for idx, (label, v1, v10, lower, threshold, fmt) in enumerate(kpis):
+        for idx, (lbl, va, vb, lower, thr, fmt) in enumerate(kpis):
             ax = axes[idx]; ax.set_facecolor(CARD)
-            bars = ax.bar(["1G", "10G"], [v1, v10], color=[C1, C10],
-                          width=0.5, edgecolor=BG, linewidth=1.5, zorder=3)
-            top = max(v1, v10) if max(v1, v10) > 0 else 1
-            if threshold:
-                ax.axhline(threshold, color=YEL, lw=1.2, ls="--", alpha=0.8, zorder=4)
-                if top * 1.15 > threshold:
-                    ax.axhspan(threshold, top * 1.15, alpha=0.04, color=YEL)
-            for bar, val in zip(bars, [v1, v10]):
-                ax.text(bar.get_x() + bar.get_width() / 2,
-                        bar.get_height() + top * 0.02,
-                        fmt.format(val), ha="center", va="bottom",
-                        color=TXT, fontsize=10, fontweight="bold")
-            i_val = round((v1-v10)/v1*100,1) if lower and v1 else round((v10-v1)/v1*100,1) if v1 else 0
-            txt   = f"{'-' if lower else '+'}{abs(i_val)}%" if v1 else "N/A"
-            ax.text(0.5, 0.97, txt, transform=ax.transAxes,
-                    ha="center", va="top", color=GRN, fontsize=13, fontweight="bold")
-            ax.set_title(label, color=TXT, fontsize=11, fontweight="bold", pad=10)
-            ax.tick_params(colors=TXT2, labelsize=9)
-            for s in ["bottom", "left"]: ax.spines[s].set_color(GRID)
+            bars = ax.bar([short_a[-8:], short_b[-8:]], [va, vb], color=[CA, CB],
+                          width=0.5, edgecolor=BG, lw=1.5, zorder=3)
+            top = max(va, vb) if max(va, vb) > 0 else 1
+            if thr:
+                ax.axhline(thr, color=YEL, lw=1.2, ls="--", alpha=0.8, zorder=4)
+                if top*1.15 > thr: ax.axhspan(thr, top*1.15, alpha=0.04, color=YEL)
+            for bar, val in zip(bars, [va, vb]):
+                ax.text(bar.get_x()+bar.get_width()/2, bar.get_height()+top*0.02,
+                        fmt.format(val), ha="center", va="bottom", color=TXT, fontsize=10, fontweight="bold")
+            iv = round((va-vb)/va*100,1) if lower and va else round((vb-va)/va*100,1) if va else 0
+            ax.text(0.5, 0.97, f"{'-' if lower else '+'}{abs(iv)}%" if va else "N/A",
+                    transform=ax.transAxes, ha="center", va="top", color=GRN, fontsize=13, fontweight="bold")
+            ax.set_title(lbl, color=TXT, fontsize=11, fontweight="bold", pad=10)
+            ax.tick_params(colors=TXT2, labelsize=8)
+            for s in ["bottom","left"]: ax.spines[s].set_color(GRID)
             ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)
             ax.grid(axis="y", color=GRID, lw=0.5, alpha=0.6, ls="--")
-            ax.set_xticks([0, 1]); ax.set_xticklabels(["1G", "10G"], color=TXT, fontsize=11)
-            ax.set_ylim(0, top * 1.28); ax.grid(axis="x", visible=False)
+            ax.set_ylim(0, top*1.28); ax.grid(axis="x", visible=False)
 
-        plt.suptitle("Key KPI Summary — 1G vs 10G NIC",
-                     color=TXT, fontsize=13, fontweight="bold", y=1.04)
+        plt.suptitle(f"Key KPI — {short_a} vs {short_b}", color=TXT, fontsize=13, fontweight="bold", y=1.04)
         plt.tight_layout()
         save("chart_04_kpi_summary.png")
 
-        # 생성된 파일명 반환 (Notion URL 구성용)
         return {"f01": fname01, "f02": fname02,
                 "f03": "chart_03_cpu_nic.png", "f04": "chart_04_kpi_summary.png"}
 
@@ -384,7 +429,7 @@ def make_charts(d1, d10, h1, h10, has_hadr):
 
 
 # ═══════════════════════════════════════════════════════════
-#  Notion API
+#  Notion API (토큰 있을 때만)
 # ═══════════════════════════════════════════════════════════
 def notion_req(method, path, body=None):
     if not NOTION_TOKEN: return None
@@ -395,198 +440,9 @@ def notion_req(method, path, body=None):
     req.add_header("Notion-Version", "2022-06-28")
     req.add_header("Content-Type",   "application/json")
     try:
-        with urllib.request.urlopen(req) as r:
-            return json.loads(r.read())
+        with urllib.request.urlopen(req) as r: return json.loads(r.read())
     except urllib.error.HTTPError as e:
-        print(f"  Notion API 오류 {e.code}: {e.read().decode()[:300]}")
-        return None
-
-def upload_image_to_notion(page_id, img_path):
-    if not os.path.exists(img_path): return None
-    try:
-        mime, _ = mimetypes.guess_type(img_path)
-        mime    = mime or "image/png"
-        fname   = os.path.basename(img_path)
-        upload  = notion_req("POST", "/file_uploads", {"name": fname, "content_type": mime})
-        if not upload: return None
-        upload_id, upload_url = upload.get("id"), upload.get("upload_url")
-        if not upload_id or not upload_url: return None
-        with open(img_path, "rb") as f: img_data = f.read()
-        boundary  = "----NotionBoundary12345"
-        body_parts = (
-            f"--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; "
-            f"filename=\"{fname}\"\r\nContent-Type: {mime}\r\n\r\n"
-        ).encode() + img_data + f"\r\n--{boundary}--\r\n".encode()
-        req2 = urllib.request.Request(upload_url, data=body_parts, method="POST")
-        req2.add_header("Authorization",  f"Bearer {NOTION_TOKEN}")
-        req2.add_header("Notion-Version", "2022-06-28")
-        req2.add_header("Content-Type",   f"multipart/form-data; boundary={boundary}")
-        try:
-            with urllib.request.urlopen(req2) as r: r.read()
-        except urllib.error.HTTPError as e:
-            print(f"  이미지 업로드 오류: {e.code}"); return None
-        notion_req("PATCH", f"/blocks/{page_id}/children", {"children": [{
-            "object": "block", "type": "image",
-            "image": {"type": "file_upload", "file_upload": {"id": upload_id}}
-        }]})
-        print(f"  이미지 업로드 OK: {fname}")
-        return upload_id
-    except Exception as e:
-        print(f"  이미지 업로드 실패: {e}"); return None
-
-
-# ═══════════════════════════════════════════════════════════
-#  Notion 페이지 생성
-# ═══════════════════════════════════════════════════════════
-def create_page(stats, has_hadr, chart_files, spec_img_path=None):
-    global GH_BASE
-    today       = datetime.now().strftime("%Y-%m-%d")
-    commit_mode = "SYNCHRONOUS_COMMIT" if has_hadr else "ASYNCHRONOUS_COMMIT"
-    title       = f"[AG 분석] NIC 1G vs 10G — {MODE} — {today}"
-
-    f01 = chart_files.get("f01", "chart_01_hadr_wait.png")
-    f02 = chart_files.get("f02", "chart_02_tps_commits_batch.png")
-    f03 = chart_files.get("f03", "chart_03_cpu_nic.png")
-    f04 = chart_files.get("f04", "chart_04_kpi_summary.png")
-
-    if has_hadr:
-        overview = (
-            f"동기 모드(SYNCHRONOUS_COMMIT)에서 **NIC 1G → 10G 업그레이드**는\n"
-            f"HADR 복제 대기시간과 처리량 양쪽에 직접적인 개선 효과를 보입니다.\n\n"
-            f"- HADR avg_wait: {stats['wait_1g']:.3f}ms → {stats['wait_10g']:.3f}ms "
-            f"({pct(stats['wait_1g'], stats['wait_10g'], True)})\n"
-            f"- Theoretical Max TPS: {int(stats['tps_1g']):,} → {int(stats['tps_10g']):,} "
-            f"({pct(stats['tps_1g'], stats['tps_10g'])})\n"
-            f"- NIC 사용률: {stats['nic_1g']:.1f}% → {stats['nic_10g']:.1f}% "
-            f"({pct(stats['nic_1g'], stats['nic_10g'], True)})"
-        )
-        chart01_why = "HADR avg_wait는 동기 모드에서 NIC 병목을 가장 직접 반영하는 지표입니다. 시계열로 전체 추이를, 히스토그램으로 분포 형태를 확인합니다."
-        chart02_why = "TPS / Commits/sec / Batch/sec 3가지 처리량 지표를 나란히 비교합니다. NIC 업그레이드가 처리량 전반에 미치는 복합 효과를 확인합니다."
-    else:
-        overview = (
-            f"비동기 모드(ASYNCHRONOUS_COMMIT)에서 **NIC 1G → 10G 업그레이드**는\n"
-            f"처리량(Batch/sec)에 거의 영향을 주지 않습니다.\n\n"
-            f"- Batch/sec: {int(stats['bat_1g']):,} → {int(stats['bat_10g']):,} "
-            f"({pct(stats['bat_1g'], stats['bat_10g'])}) — **변화 없음**\n"
-            f"- NIC 사용률: {stats['nic_1g']:.1f}% → {stats['nic_10g']:.1f}% "
-            f"({pct(stats['nic_1g'], stats['nic_10g'], True)})\n\n"
-            f"10G 업그레이드의 핵심 가치는 **향후 부하 증가 대비 NIC 여유 확보**입니다."
-        )
-        chart01_why = "비동기 모드에서 HADR wait=0이므로 Batch/sec 시계열로 처리량 안정성을 확인합니다. 1G/10G 라인이 유사하면 NIC는 처리량 병목이 아닙니다."
-        chart02_why = "Batch/sec / CPU / Disk IOPS를 나란히 비교합니다. 처리량 변화가 없다면 NIC는 처리량 병목이 아님을 확인합니다."
-
-    nic1_margin  = round(70 - stats["nic_1g_max"],  1)
-    nic10_margin = round(70 - stats["nic_10g_max"], 1)
-    cpu1_margin  = round(85 - stats["cpu_1g_max"],  1)
-    cpu10_margin = round(85 - stats["cpu_10g_max"], 1)
-
-    content = f"""## 📌 개요
-
-{overview}
-
----
-
-## 📋 테스트 정보
-
-| 항목 | 내용 |
-|---|---|
-| 분석 모드 | {MODE} |
-| AG 커밋 모드 | {commit_mode} |
-| SQL Server | 2025 Preview |
-| Windows Server | 2022 |
-| 클러스터 | WSFC |
-| Primary / Secondary | PFDB01 / PFDB02 |
-| 부하 도구 | HammerDB |
-| 차트 폴더 | `{SUBDIR}` |
-| 분석 일시 | {today} |
-
----
-
-## 📊 핵심 KPI 요약
-
-> **왜 이 차트를 먼저 보나요?**
-> 4개 핵심 지표를 막대 그래프로 한눈에 비교합니다. 각 막대 위 % = 1G 대비 10G 개선율. 노란 점선 = 위험 임계값.
->
-> **읽는 법:** 막대 위 초록 % 가 클수록 개선 효과가 큽니다. 노란 점선에 가까울수록 위험합니다.
-
-![KPI Summary]({GH_BASE}/{f04})
-
-| 지표 | 1G NIC | 10G NIC | 개선율 | 평가 |
-|---|---|---|---|---|
-| HADR avg_wait (ms) | {stats["wait_1g"]:.3f} | {stats["wait_10g"]:.3f} | {pct(stats["wait_1g"], stats["wait_10g"], True)} | {"✅" if has_hadr else "ℹ️ ASYNC=0ms 정상"} |
-| Theoretical Max TPS | {int(stats["tps_1g"]):,} | {int(stats["tps_10g"]):,} | {pct(stats["tps_1g"], stats["tps_10g"])} | {"✅" if has_hadr else "ℹ️"} |
-| Commits/sec | {int(stats["com_1g"]):,} | {int(stats["com_10g"]):,} | {pct(stats["com_1g"], stats["com_10g"])} | {"✅" if has_hadr else "ℹ️"} |
-| Batch Requests/sec | {int(stats["bat_1g"]):,} | {int(stats["bat_10g"]):,} | {pct(stats["bat_1g"], stats["bat_10g"])} | ✅ |
-| NIC 사용률 (%) | {stats["nic_1g"]:.1f} | {stats["nic_10g"]:.1f} | {pct(stats["nic_1g"], stats["nic_10g"], True)} | ✅ |
-| CPU 사용률 (%) | {stats["cpu_1g"]:.1f} | {stats["cpu_10g"]:.1f} | — | ✅ |
-
-{"" if has_hadr else "> ⚠️ **Transaction Delay = 0ms**: ASYNCHRONOUS_COMMIT 모드의 정상 동작입니다."}
-
----
-
-## 🔬 {"HADR 대기시간 분석" if has_hadr else "처리량 안정성 분석"}
-
-> **왜 이 차트인가요?** {chart01_why}
->
-> **읽는 법:** 상단 시계열에서 추이와 변동폭을, 하단 히스토그램에서 분포 집중도를 비교하세요.
-
-![Chart 01]({GH_BASE}/{f01})
-
----
-
-## 📈 {"처리량 비교" if has_hadr else "성능 비교"}
-
-> **왜 이 차트인가요?** {chart02_why}
->
-> **읽는 법:** 각 패널 상단 초록 % = 개선율. 라인 변동폭이 작을수록 안정적입니다.
-
-![Chart 02]({GH_BASE}/{f02})
-
----
-
-## 🖥️ 리소스 사용률
-
-> **왜 이 차트인가요?** CPU와 NIC 사용률 시계열로 향후 부하 증가 시 병목 위험을 판단합니다.
->
-> **읽는 법:** 빨간(1G) 라인이 노란 임계선에 얼마나 근접하는지, 파란(10G) 라인의 여유가 얼마나 큰지 비교하세요.
-
-![CPU & NIC]({GH_BASE}/{f03})
-
-| 리소스 | 임계값 | 1G 최대 | 10G 최대 | 1G 여유 | 10G 여유 | 상태 |
-|---|---|---|---|---|---|---|
-| NIC 사용률 | 70% | {stats["nic_1g_max"]:.1f}% | {stats["nic_10g_max"]:.1f}% | {nic1_margin}%p | {nic10_margin}%p | {"⚠️" if stats["nic_1g_max"] > 50 else "✅"} → ✅ |
-| CPU | 85% | {stats["cpu_1g_max"]:.1f}% | {stats["cpu_10g_max"]:.1f}% | {cpu1_margin}%p | {cpu10_margin}%p | ✅ ✅ |
-
----
-
-## 💡 결론 및 권고사항
-
-{overview}
-
-### 추가 최적화 권고
-
-| 항목 | 내용 | 기대 효과 |
-|---|---|---|
-| Jumbo Frame (MTU 9000) | 대용량 패킷 처리 효율화 | 네트워크 오버헤드 감소 |
-| RSS/VMQ 활성화 | NIC 멀티코어 분산 처리 | NIC 처리 효율 향상 |
-| HADR 전용 NIC 분리 | 복제 트래픽 격리 | 일반 트래픽과 간섭 제거 |
-"""
-
-    body = {
-        "parent":     {"page_id": PARENT_PAGE_ID},
-        "icon":       {"type": "emoji", "emoji": "📊"},
-        "properties": {"title": {"title": [{"text": {"content": title}}]}},
-        "children":   [{"object": "block", "type": "paragraph",
-                        "paragraph": {"rich_text": [{"type": "text", "text": {"content": content}}]}}]
-    }
-    result = notion_req("POST", "/pages", body)
-    if not result: return None, None
-    page_id  = result["id"]
-    page_url = result.get("url", "")
-    print(f"  페이지 생성 OK: {page_url}")
-    if spec_img_path:
-        upload_image_to_notion(page_id, spec_img_path)
-    return page_url, page_id
+        print(f"  Notion API 오류 {e.code}: {e.read().decode()[:300]}"); return None
 
 
 # ═══════════════════════════════════════════════════════════
@@ -595,73 +451,87 @@ def create_page(stats, has_hadr, chart_files, spec_img_path=None):
 def main():
     global SUBDIR, CHARTS_DIR, GH_BASE
 
-    print(f"\n{'='*50}\nAG 성능 분석 — {MODE}\n{'='*50}")
-    if not NOTION_TOKEN:
-        print("[경고] NOTION_TOKEN 환경변수 없음 — Notion 저장 건너뜀")
+    mode_label, path_a, path_b, path_hadr, bps_a, bps_b = parse_args()
 
-    files   = find_csv()
-    missing = [k for k in ["pdh_1g", "pdh_10g", "hadr"] if k not in files]
-    if missing:
-        print(f"[오류] CSV 파일 없음: {missing}"); return
+    print(f"\n{'='*55}\nAG 성능 분석\n  A: {path_a}\n  B: {path_b}\n{'='*55}")
 
-    # 파일명 기반 고유 폴더 확정
-    SUBDIR     = make_subdir(files)
+    if not path_a or not os.path.exists(path_a):
+        print(f"[오류] A 파일 없음: {path_a}"); return
+    if not path_b or not os.path.exists(path_b):
+        print(f"[오류] B 파일 없음: {path_b}"); return
+
+    label_a = os.path.splitext(os.path.basename(path_a))[0]
+    label_b = os.path.splitext(os.path.basename(path_b))[0]
+
+    SUBDIR     = make_subdir(label_a, label_b)
     CHARTS_DIR = os.path.join(BASE_DIR, "charts", SUBDIR)
     GH_BASE    = f"{GH_BASE_ROOT}/{SUBDIR}"
     os.makedirs(CHARTS_DIR, exist_ok=True)
-    print(f"  차트 저장 폴더: charts/{SUBDIR}/")
+    print(f"  차트 폴더: charts/{SUBDIR}/")
 
     print(f"\n[1] CSV 파싱...")
-    d1  = load_pdh(files["pdh_1g"],  1e9)
-    d10 = load_pdh(files["pdh_10g"], 10e9)
-    h1  = load_hadr(files["hadr"], f"{MODE}_1G_NIC")
-    h10 = load_hadr(files["hadr"], f"{MODE}_10G_NIC")
-    print(f"  1G PDH:{len(d1)}행  10G PDH:{len(d10)}행  HADR 1G:{len(h1)}행  HADR 10G:{len(h10)}행")
+    da = load_pdh(path_a, bps_a)
+    db = load_pdh(path_b, bps_b)
+    print(f"  A:{len(da)}행  B:{len(db)}행")
 
-    w1_v  = clean([fv(r["avg_wait_per_commit_ms"]) for r in h1])
-    w10_v = clean([fv(r["avg_wait_per_commit_ms"]) for r in h10])
-    aw1   = round(avg(w1_v),  3)
-    aw10  = round(avg(w10_v), 3)
-    has_hadr = len(w1_v) > 0 and len(w10_v) > 0 and (aw1 > 0 or aw10 > 0)
-    print(f"  HADR wait 1G:{aw1}ms  10G:{aw10}ms  has_hadr={has_hadr}")
+    # HADR 로드
+    ha, hb = load_hadr_for(path_hadr, label_a, label_b)
 
-    nic1  = [d["nic"] for d in d1];  nic10  = [d["nic"] for d in d10]
-    cpu1  = clean([d["cpu"]   for d in d1]); cpu10  = clean([d["cpu"]   for d in d10])
-    b1    = clean([d["batch"] for d in d1]); b10    = clean([d["batch"] for d in d10])
-    t1_v  = clean([fv(r["theoretical_max_tps"]) for r in h1])
-    t10_v = clean([fv(r["theoretical_max_tps"]) for r in h10])
-    c1_v  = clean([fv(r["commits_per_sec"])     for r in h1])
-    c10_v = clean([fv(r["commits_per_sec"])     for r in h10])
+    # has_hadr 판별
+    wa = clean([fv(r["avg_wait_per_commit_ms"]) for r in ha])
+    wb = clean([fv(r["avg_wait_per_commit_ms"]) for r in hb])
+    awa = round(avg(wa),3); awb = round(avg(wb),3)
+    has_hadr = len(wa)>0 and len(wb)>0 and (awa>0 or awb>0)
+    print(f"  HADR wait A:{awa}ms B:{awb}ms  has_hadr={has_hadr}")
+
+    # PDH 통계
+    nica  = [d["nic"] for d in da]; nicb  = [d["nic"] for d in db]
+    cpua  = clean([d["cpu"]   for d in da]); cpub  = clean([d["cpu"]   for d in db])
+    ba_l  = clean([d["batch"] for d in da]); bb_l  = clean([d["batch"] for d in db])
+    t_a   = clean([fv(r["theoretical_max_tps"]) for r in ha])
+    t_b   = clean([fv(r["theoretical_max_tps"]) for r in hb])
+    c_a   = clean([fv(r["commits_per_sec"])     for r in ha])
+    c_b   = clean([fv(r["commits_per_sec"])     for r in hb])
 
     stats = {
-        "wait_1g": aw1, "wait_10g": aw10,
-        "tps_1g":  round(avg(t1_v),  0), "tps_10g":  round(avg(t10_v),  0),
-        "com_1g":  round(avg(c1_v),  0), "com_10g":  round(avg(c10_v),  0),
-        "bat_1g":  round(avg(b1),    0), "bat_10g":  round(avg(b10),    0),
-        "cpu_1g":  round(avg(cpu1),  1), "cpu_10g":  round(avg(cpu10),  1),
-        "cpu_1g_max":  round(max(cpu1)  if cpu1  else 0, 1),
-        "cpu_10g_max": round(max(cpu10) if cpu10 else 0, 1),
-        "nic_1g":  round(avg(nic1),  1), "nic_10g":  round(avg(nic10),  1),
-        "nic_1g_max":  round(max(nic1)  if nic1  else 0, 1),
-        "nic_10g_max": round(max(nic10) if nic10 else 0, 1),
+        "wait_1g": awa, "wait_10g": awb,
+        "tps_1g":  round(avg(t_a),0), "tps_10g":  round(avg(t_b),0),
+        "com_1g":  round(avg(c_a),0), "com_10g":  round(avg(c_b),0),
+        "bat_1g":  round(avg(ba_l),0),"bat_10g":  round(avg(bb_l),0),
+        "cpu_1g":  round(avg(cpua),1),"cpu_10g":  round(avg(cpub),1),
+        "cpu_1g_max":  round(max(cpua) if cpua else 0,1),
+        "cpu_10g_max": round(max(cpub) if cpub else 0,1),
+        "nic_1g":  round(avg(nica),1),"nic_10g":  round(avg(nicb),1),
+        "nic_1g_max":  round(max(nica) if nica else 0,1),
+        "nic_10g_max": round(max(nicb) if nicb else 0,1),
     }
 
     print(f"\n[2] 차트 생성...")
-    chart_files = make_charts(d1, d10, h1, h10, has_hadr) or {}
+    chart_files = make_charts(da, db, ha, hb, has_hadr, label_a, label_b) or {}
 
     print(f"\n[3] git push...")
     os.chdir(BASE_DIR)
     subprocess.run("git add -A", shell=True)
-    subprocess.run(f'git commit -m "[{MODE}] {SUBDIR}"', shell=True)
+    subprocess.run(f'git commit -m "[분석] {SUBDIR}"', shell=True)
     r = subprocess.run("git push", shell=True, capture_output=True, text=True)
     print("  git push:", "OK" if r.returncode == 0 else r.stderr.strip())
 
-    if NOTION_TOKEN:
-        print(f"\n[4] Notion 페이지 생성...")
-        url, _ = create_page(stats, has_hadr, chart_files, files.get("spec_img"))
-        print(f"\n{'='*50}\n완료! {url}\n{'='*50}\n")
-    else:
-        print(f"\n{'='*50}\n차트 생성/push 완료 (Notion 건너뜀)\n{'='*50}\n")
+    # latest.json 저장
+    latest = {
+        "subdir":      SUBDIR,
+        "mode":        mode_label,
+        "timestamp":   TIMESTAMP,
+        "gh_base":     GH_BASE,
+        "has_hadr":    has_hadr,
+        "chart_files": chart_files,
+        "stats":       stats,
+        "scenario":    {"label_a": label_a, "label_b": label_b}
+    }
+    with open(os.path.join(BASE_DIR, "charts", "latest.json"), "w", encoding="utf-8") as f:
+        json.dump(latest, f, ensure_ascii=False, indent=2)
+    print(f"  latest.json 저장 OK")
+
+    print(f"\n{'='*55}\n차트 완료! Notion 페이지 생성은 Claude MCP에서 진행하세요.\nlatest.json 위치: {BASE_DIR}\\charts\\latest.json\n{'='*55}\n")
 
 
 if __name__ == "__main__":
