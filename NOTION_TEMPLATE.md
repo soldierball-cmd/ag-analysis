@@ -4,7 +4,7 @@
 - 상위 페이지 ID: 366dadb5-6b2f-8019-8e65-d0de1d942753
 - Charts Base URL: https://soldierball-cmd.github.io/ag-analysis/charts
 - 차트 파일명 4종 고정:
-  - chart_01_hadr_wait.png (또는 시나리오별 주요 지표)
+  - chart_01_main.png      (시나리오 자동 전환: HADR wait 또는 Batch/sec)
   - chart_02_throughput.png
   - chart_03_cpu_nic.png
   - chart_04_kpi_summary.png
@@ -73,7 +73,7 @@
 > **차트 읽는 법:**
 > {Claude가 시나리오에 맞게 작성}
 
-![Chart 01](https://soldierball-cmd.github.io/ag-analysis/charts/chart_01_hadr_wait.png)
+![Chart 01](https://soldierball-cmd.github.io/ag-analysis/charts/chart_01_main.png)
 
 | 구분 | A ({label_a}) | B ({label_b}) | 의미 |
 |---|---|---|---|

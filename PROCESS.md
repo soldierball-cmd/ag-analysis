@@ -1,9 +1,11 @@
 # SQL Server 성능 비교 분석 — 범용 프로세스 가이드
 
 ## 목적
-이 가이드는 Claude가 어떤 성능 비교 분석이든 CSV 파일과 테스트 제목만으로
-자동으로 분석하고 Notion 리포트를 생성하기 위한 범용 프레임워크입니다.
-AG 동기모드 1G vs 10G NIC 비교는 템플릿 케이스이며, 실제로는 어떤 비교 분석에도 적용됩니다.
+Claude가 어떤 성능 비교 분석 요청이든 **파일명 + 테스트 제목만으로**
+스스로 시나리오를 판단하고 Notion 리포트를 자동 생성하기 위한 범용 프레임워크.
+
+과거 분석 결과나 특정 시나리오 값은 무시하고,
+**항상 업로드된 CSV 데이터만 기반으로 분석**한다.
 
 ---
 
@@ -11,152 +13,88 @@ AG 동기모드 1G vs 10G NIC 비교는 템플릿 케이스이며, 실제로는 
 | 항목 | 내용 |
 |---|---|
 | GitHub Pages | https://soldierball-cmd.github.io/ag-analysis/ |
-| GitHub 계정 | soldierball-cmd |
 | 로컬 저장소 | D:\12.git\ag-analysis\ |
 | Notion 상위 페이지 ID | 366dadb5-6b2f-8019-8e65-d0de1d942753 |
-| Notion PAT | 환경변수 NOTION_TOKEN (코드 직접 입력 금지) |
 | Charts Base URL | https://soldierball-cmd.github.io/ag-analysis/charts |
 
 ---
 
 ## Claude 분석 시작 시 필수 절차
 
-새 대화에서 분석 요청이 오면 반드시 아래 순서로 처리:
-
-### Step 1: 파일명과 제목으로 시나리오 자동 판단
-사용자가 제공한 **테스트 제목**과 **파일명**을 보고 아래를 스스로 파악:
-- 무엇 vs 무엇을 비교하는가? (A군 / B군)
-- 어떤 지표가 핵심인가? (NIC 비교라면 NIC/HADR 중심, CPU 비교라면 CPU 중심 등)
-- HADR CSV가 있는가? (있으면 wait 분석 포함, 없으면 PDH 지표만)
+### Step 1: 시나리오 자동 판단
+테스트 제목 + 파일명만 보고 스스로 파악:
+- A군 vs B군이 무엇인가?
+- 핵심 비교 지표가 무엇인가?
+- HADR CSV가 있는가? → has_hadr 판별
 - 추가 파일(이미지, DMV 등)이 있는가?
 
-### Step 2: 파일 읽기
-```
-filesystem MCP → D:\12.git\ag-analysis\PROCESS.md (이 파일)
-filesystem MCP → D:\12.git\ag-analysis\NOTION_TEMPLATE.md
-```
+### Step 2: CSV 파싱 및 통계 계산
+업로드된 CSV만 사용. 과거 수치 절대 사용 금지.
 
-### Step 3: CSV 파싱 및 통계 계산 (bash_tool)
-→ 아래 "CSV 파싱 규칙" 참조
+### Step 3: has_hadr 판별 (차트 분기의 핵심)
+HADR CSV의 avg_wait_per_commit_ms 평균 확인:
+- `has_hadr = True` → avg_wait > 0 (동기모드 등)
+- `has_hadr = False` → avg_wait = 0 또는 HADR 데이터 없음 (비동기모드 등)
 
-### Step 4: 시나리오별 핵심 지표 선정
-→ 아래 "시나리오 판단 기준" 참조
+**has_hadr=False이면 HADR 데이터를 차트/분석에 절대 사용하지 않음**
 
-### Step 5: Notion 새 페이지 생성
-→ NOTION_TEMPLATE.md 구조 + 시나리오별 핵심 지표 강조
+### Step 4: Notion 새 페이지 생성
+- notion-create-pages MCP 사용
+- parent page_id: `366dadb5-6b2f-8019-8e65-d0de1d942753`
+- 매번 새 페이지 생성 (기존 페이지 수정 금지)
+- 실측 CSV 데이터 기반 수치만 사용 (추정값 절대 금지)
+
+---
+
+## 시나리오 자동 판단 기준
+
+파일명 + 테스트 제목으로 Claude가 스스로 판단:
+
+| 시나리오 | 판단 키워드 | 핵심 지표 |
+|---|---|---|
+| NIC 업그레이드 | 1G / 10G / 25G / NIC / 네트워크 | HADR wait, TPS, NIC 사용률 |
+| 동기/비동기 모드 | 동기 / 비동기 / SYNC / ASYNC | HADR wait, TPS, TX Delay |
+| SQL Server 버전 | 2019 / 2022 / 2025 / 버전 | Batch/sec, CPU, PLE |
+| 스토리지/Disk | SSD / NVMe / HDD / 디스크 | Disk IOPS, Disk Latency |
+| CPU/메모리 | CPU / Core / NUMA / Memory / RAM | CPU%, PLE, Batch/sec |
+| 기타/범용 | 위 해당 없음 | 유효 지표 자동 감지 |
 
 ---
 
 ## CSV 파싱 규칙
 
-### PDH 성능모니터 CSV
-- 인코딩: **CP949**
-- 컬럼명이 `\\서버명\\카운터경로` 형식 → 키워드로 자동 탐색
-
-```python
-def gcol(cols, keyword):
-    return next((c for c in cols if keyword in c), None)
-
-# 탐색할 키워드 목록
-cpu_col     = gcol(cols, '% Processor Time')
-batch_col   = gcol(cols, 'Batch Requests/sec')
-tx_col      = gcol(cols, 'Transaction Delay')
-replica_col = gcol(cols, 'Bytes Sent to Replica/sec')
-bytes_col   = gcol(cols, 'Bytes Total/sec')
-disk_col    = gcol(cols, 'Disk Transfers/sec')
-disk_lat    = gcol(cols, 'Avg. Disk sec/Transfer')
-mem_col     = gcol(cols, 'Available MBytes')
-ple_col     = gcol(cols, 'Page Life Expectancy')
-```
+### PDH 성능모니터 CSV (CP949 인코딩)
+컬럼명이 `\\서버명\\카운터경로` 형식 → 키워드로 자동 탐색:
+- `% Processor Time` → CPU
+- `Batch Requests/sec` → 처리량
+- `Transaction Delay` → TX 지연
+- `Bytes Sent to Replica/sec` → 복제 전송 (NIC 계산용)
+- `Bytes Total/sec` → 전체 NIC 트래픽
+- `Disk Transfers/sec` → Disk IOPS
+- `Avg. Disk sec/Transfer` → Disk 지연 (×1000 = ms)
+- `Available MBytes` → 가용 메모리
+- `Page Life Expectancy` → PLE
 
 ### NIC 사용률 계산
-```python
-# 파일명 또는 제목에서 NIC 대역폭 자동 판단
-# "10G" 포함 → 10,000,000,000 bps
-# "1G" 포함 → 1,000,000,000 bps
-# "25G" 포함 → 25,000,000,000 bps
-nic_pct = bytes_sent_to_replica * 8 / nic_bps * 100  # 10G 환경
-nic_pct = bytes_total * 8 / nic_bps * 100              # 1G 환경
+파일명에서 NIC 대역폭 자동 판단 (1G=1e9 / 10G=10e9 / 25G=25e9):
+```
+NIC% = Bytes Sent to Replica/sec × 8 / NIC대역폭 × 100
 ```
 
-### HADR 모니터링 CSV
-- `scenario` 컬럼으로 필터링
-- 컬럼: `avg_wait_per_commit_ms`, `commits_per_sec`, `theoretical_max_tps`
-- 파일명/scenario 값에서 A군/B군 자동 판별
-
-### DMV CSV (선택)
-- `dm_os_wait_stats` 형태: wait_type / waiting_tasks_count / wait_time_ms
-- `dm_hadr_database_replica_states` 형태: log_send_queue_size / redo_queue_size
+### HADR CSV
+- `scenario` 컬럼으로 A/B군 필터
+- 컬럼: `avg_wait_per_commit_ms` / `commits_per_sec` / `theoretical_max_tps`
 
 ---
 
-## 통계 계산 기준 (항상 적용)
+## 통계 계산 기준
 
-```python
-import statistics
-
-def calc_stats(vals):
-    vals = [v for v in vals if v is not None]
-    if not vals: return {}
-    return {
-        'avg':   round(statistics.mean(vals), 3),
-        'min':   round(min(vals), 3),
-        'max':   round(max(vals), 3),
-        'p95':   round(sorted(vals)[int(len(vals)*0.95)], 3),
-        'stdev': round(statistics.stdev(vals) if len(vals) > 1 else 0, 3),
-    }
-
-# 안정구간: 워밍업(앞 10%) + 쿨다운(뒤 10%) 제외
-def stable(rows):
-    n = len(rows)
-    return rows[int(n*0.1) : int(n*0.9)]
-```
+전체 구간 + 안정구간(앞 10% / 뒤 10% 제외) 모두 계산:
+- avg / min / max / P95 / stdev
 
 ---
 
-## 시나리오 판단 기준
-
-Claude는 파일명과 테스트 제목을 보고 아래 기준으로 시나리오를 자동 판단한다.
-
-### 시나리오 A: NIC 업그레이드 비교
-**판단 기준:** 파일명에 "1G", "10G", "25G", "NIC", "네트워크" 포함
-**핵심 지표:** HADR avg_wait, TPS, NIC 사용률, Batch/sec
-**차트 구성:** 차트1(HADR wait 시계열+분포) / 차트2(처리량 3패널) / 차트3(CPU+NIC) / 차트4(KPI 막대)
-**강조 포인트:** NIC 포화 여부, HADR wait 감소, Transaction Delay는 병목 아님 명시
-
-### 시나리오 B: 동기/비동기 모드 비교
-**판단 기준:** 파일명에 "동기", "비동기", "SYNC", "ASYNC" 포함
-**핵심 지표:** HADR avg_wait, TPS, Commits/sec, Transaction Delay
-**차트 구성:** 차트1(HADR wait 비교) / 차트2(처리량) / 차트3(CPU+NIC) / 차트4(KPI)
-**강조 포인트:** 동기/비동기 간 대기시간 트레이드오프 분석
-
-### 시나리오 C: SQL Server 버전 비교
-**판단 기준:** 파일명에 버전명(2019, 2022, 2025 등) 포함
-**핵심 지표:** Batch/sec, CPU, Memory(PLE), Disk IOPS
-**차트 구성:** 차트1(처리량) / 차트2(CPU+Memory) / 차트3(Disk) / 차트4(KPI)
-**강조 포인트:** 버전별 성능 차이, 리소스 효율 비교
-
-### 시나리오 D: 스토리지/Disk 비교
-**판단 기준:** 파일명에 "SSD", "NVMe", "HDD", "디스크", "Disk" 포함
-**핵심 지표:** Disk IOPS, Disk Latency(ms), PLE, Batch/sec
-**차트 구성:** 차트1(Disk IOPS) / 차트2(Disk Latency) / 차트3(PLE+Memory) / 차트4(KPI)
-**강조 포인트:** I/O 병목 여부, 스토리지 유형별 지연 차이
-
-### 시나리오 E: CPU/메모리 설정 비교
-**판단 기준:** 파일명에 "CPU", "Core", "NUMA", "Memory", "RAM" 포함
-**핵심 지표:** CPU 사용률, PLE, Batch/sec, 컨텍스트 스위치
-**차트 구성:** 차트1(CPU) / 차트2(Memory/PLE) / 차트3(처리량) / 차트4(KPI)
-**강조 포인트:** CPU 병목 여부, 메모리 압박 여부
-
-### 시나리오 F: 기타/범용
-**판단 기준:** 위 시나리오에 해당하지 않는 경우
-**핵심 지표:** 파일에 있는 모든 유효 지표 자동 감지
-**차트 구성:** 데이터에 따라 Claude가 가장 의미있는 4개 차트 자동 선정
-**강조 포인트:** 테스트 제목과 목적에 맞게 Claude가 인사이트 도출
-
----
-
-## 임계값 기준 (공통)
+## 임계값 기준
 | 지표 | 정상 | 주의 | 위험 |
 |---|---|---|---|
 | HADR avg_wait | < 10ms | 10~20ms | > 20ms |
@@ -164,107 +102,68 @@ Claude는 파일명과 테스트 제목을 보고 아래 기준으로 시나리�
 | CPU 사용률 | < 70% | 70~85% | > 85% |
 | Disk Latency | < 5ms | 5~15ms | > 15ms |
 | PLE | > 300 | 100~300 | < 100 |
-| Memory 사용률 | < 80% | 80~90% | > 90% |
 
 ---
 
-## 차트 구성 원칙 (4종 고정)
+## 차트 저장 구조
 
-차트 파일명은 항상 아래 4개 고정 (Notion URL과 일치):
-- `chart_01_hadr_wait.png`
-- `chart_02_throughput.png`
-- `chart_03_cpu_nic.png`
-- `chart_04_kpi_summary.png`
-
-시나리오에 따라 차트 내용은 달라지지만 파일명은 동일하게 유지.
-
-**공통 스타일:**
-```python
-BG   = "#1a1d27"  # 전체 배경
-CARD = "#22263a"  # 플롯 배경
-C_A  = "#ff6b6b"  # A군 (레드)
-C_B  = "#4e7cff"  # B군 (블루)
-GRN  = "#06d6a0"  # 개선율 강조
-YEL  = "#ffd166"  # 위험임계값
-TXT  = "#e8eaf6"  # 텍스트
-TXT2 = "#9fa8c7"  # 보조 텍스트
+```
+charts/{YYYYMMDD_HHMMSS}_{A파일명}_vs_{B파일명}/
+  has_hadr=True:  chart_01_hadr_wait.png / chart_02_tps_commits_batch.png
+  has_hadr=False: chart_01_batch_timeseries.png / chart_02_batch_cpu_disk.png
+  공통:           chart_03_cpu_nic.png / chart_04_kpi_summary.png
 ```
 
-**⚠️ 절대 금지: 차트를 base64로 컨텍스트에 올리는 것 → 대화창 폭발**
+- 분석마다 고유 폴더 → 덮어쓰기 없음, 다중 사용자 지원
+- Notion URL: `https://soldierball-cmd.github.io/ag-analysis/charts/{SUBDIR}/{파일명}`
+- Notion 페이지 생성 시 SUBDIR 포함한 정확한 URL 사용
 
 ---
 
-## Notion 페이지 생성 규칙
+## Notion 페이지 작성 원칙
 
-- `notion-create-pages` MCP 사용
-- parent page_id: `366dadb5-6b2f-8019-8e65-d0de1d942753`
-- 매번 **새 페이지** 생성 (기존 페이지 수정 금지)
-- NOTION_TEMPLATE.md 구조 기반으로 작성
-- 차트는 GitHub Pages URL로 삽입 (git push 완료 후 표시됨)
+1. **📌 개요 섹션 필수** — 시나리오별 핵심 인사이트를 첫 번째로 서술
+2. 차트 앞에 callout 필수: 왜 이 차트인지 / 읽는 법
+3. 수치는 업로드된 CSV 실측 기반만 (추정값 사용 금지)
+4. has_hadr=False: "HADR wait = 0ms — ASYNC 모드 정상 동작" 명시
+5. Transaction Delay 증가 = 병목 아님 (복제 시나리오 시 명시)
+6. 리소스 임계값 표 (최대값, 여유%p) 필수
+7. 서버 스펙 이미지 분석 결과 → 🖥️ 서버 스펙 섹션에 표로 포함
+8. 모든 내용 한국어로 작성
 
 ---
-
-## ⛔ 절대 금지 (차트 삽입 관련)
-
-Notion 페이지에 차트 이미지를 삽입할 때:
-1. **반드시 해당 분석 요청의 실제 CSV 데이터로 생성된 차트만 삽입**
-2. GitHub Pages에 해당 분석의 차트가 없으면 추측하거나 다른 분석의 차트를 재사용하지 말 것
-   → 사용자에게 아래와 같이 안내할 것:
-   "차트는 PC에서 analyze.py 실행 후 git push가 완료되면 Notion에 추가하겠습니다."
-3. 기존에 GitHub Pages에 올라가 있는 다른 분석의 차트를 현재 분석에 재사용하는 것은
-   **데이터 왜곡** → 어떤 이유로도 절대 금지
-4. 차트가 없는 상태에서 Notion 페이지를 먼저 생성하는 것은 허용
-   → 차트 섹션에 "차트는 git push 완료 후 추가 예정" 텍스트 삽입
-
-## analyze.py 차트 자동 전환 로직 (현재 구현 완료)
-
-has_hadr 플래그로 HADR 데이터 유무를 자동 판별:
-
-```
-has_hadr = True  (동기모드 등 HADR wait > 0)
-  차트01: HADR wait 시계열 + 분포
-  차트02: TPS / Commits/sec / Batch/sec
-  차트04: HADR wait / TPS / Batch / NIC
-
-has_hadr = False (비동기모드 등 HADR wait = 0)
-  차트01: Batch/sec 시계열 + 분포     ← PDH 데이터만
-  차트02: Batch / CPU / Disk          ← PDH 데이터만
-  차트04: Batch / CPU / Disk / NIC    ← PDH 데이터만
-
-차트03: CPU + NIC 사용률              ← 항상 PDH 데이터
-```
-
-⚠️ 핵심 원칙:
-- HADR CSV 데이터(h1, h10)는 반드시 has_hadr 확인 후에만 사용
-- has_hadr=False이면 h1/h10 데이터를 절대 차트에 사용하지 않음
-- PDH 데이터(d1, d10)는 항상 안전하게 사용 가능
-- 차트 파일명: chart_01_main.png / chart_02_throughput.png / chart_03_cpu_nic.png / chart_04_kpi_summary.png
 
 ## 서버 스펙 이미지 처리
-- data/ 폴더에 "스펙" 또는 "spec" 포함된 이미지 파일이 있으면 자동 탐지
-- analyze.py가 Notion 페이지 생성 후 자동으로 이미지 업로드 시도
-- Claude(MCP)에서 직접 분석 요청 시: [IMAGE_BASE64] 블록이 있으면 이미지를 분석하여 서버 스펙 정보를 텍스트로 Notion 페이지에 포함
-- base64 이미지를 컨텍스트에 적재하지 말 것 (대화창 폭발)
+
+- Agent UI가 Anthropic API로 이미지를 자동 분석 → 텍스트 추출
+- 추출된 텍스트가 sendPrompt의 [서버 스펙 분석 결과] 섹션으로 전달
+- Claude는 해당 내용을 Notion 페이지 🖥️ 서버 스펙 섹션에 표로 삽입
+- base64 이미지 원본을 Claude 컨텍스트에 올리지 말 것
 
 ---
 
-## 핵심 제약사항
-| 제약 | 이유 |
+## ⛔ 절대 금지
+| 금지 사항 | 이유 |
 |---|---|
-| NOTION_TOKEN 코드 하드코딩 금지 | GitHub push 차단됨 |
-| 차트 base64 컨텍스트 적재 금지 | 대화창 컨텍스트 폭발 |
-| Claude 서버 → GitHub Pages curl 불가 | 403 반환 (브라우저는 정상) |
-| Claude 서버 → api.notion.com 직접 호출 불가 | Host not in allowlist |
-| 다른 분석의 차트 URL 재사용 금지 | 데이터 왜곡 |
+| 과거 분석 수치를 현재 분석에 사용 | 데이터 조작 |
+| 다른 분석의 차트 URL 재사용 | 데이터 왜곡 |
+| has_hadr=False에서 HADR 데이터 차트 사용 | 잘못된 분석 |
+| 차트 base64를 컨텍스트에 적재 | 대화창 폭발 |
+| NOTION_TOKEN 코드 하드코딩 | GitHub push 차단 |
+| Claude 서버 → GitHub Pages curl | 403 반환 |
+| Claude 서버 → api.notion.com 직접 호출 | 허용목록 미포함 |
 
 ---
 
-## 참고: 템플릿 케이스 실측 결과 (AG 동기모드 1G vs 10G)
-| 지표 | 1G NIC | 10G NIC | 개선율 |
-|---|---|---|---|
-| HADR avg_wait (ms) | 0.361 | 0.175 | ▼51.5% |
-| Theoretical Max TPS | 1,388 | 2,883 | ▲107.7% |
-| Batch Requests/sec | 1,753 | 3,676 | ▲109.7% |
-| NIC 사용률 (%) | 32.0 | 4.3 | ▼86.7% |
-| CPU 사용률 (%) | 8.9 | 18.6 | — |
-| Transaction Delay (ms) | 483 | 1,206 | ▲(병목 아님) |
+## 분석 워크플로우 (사용자 안내용)
+
+```
+① Agent UI에서 CSV + 이미지 업로드 → 분석 시작
+   → Claude가 통계 분석 + Notion 페이지 생성
+
+② PowerShell에서 실행 (차트 생성)
+   cd D:\12.git\ag-analysis
+   python analyze.py {모드}
+
+③ Notion 페이지 새로고침 → 차트 이미지 표시
+```
