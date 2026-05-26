@@ -208,14 +208,43 @@ TXT2 = "#9fa8c7"  # 보조 텍스트
 
 Notion 페이지에 차트 이미지를 삽입할 때:
 1. **반드시 해당 분석 요청의 실제 CSV 데이터로 생성된 차트만 삽입**
-2. GitHub Pages에 해당 분석의 차트가 존재하는지 확인 불가한 경우
-   → 차트 URL을 추측하거나 다른 분석의 차트를 재사용하지 말 것
+2. GitHub Pages에 해당 분석의 차트가 없으면 추측하거나 다른 분석의 차트를 재사용하지 말 것
    → 사용자에게 아래와 같이 안내할 것:
    "차트는 PC에서 analyze.py 실행 후 git push가 완료되면 Notion에 추가하겠습니다."
 3. 기존에 GitHub Pages에 올라가 있는 다른 분석의 차트를 현재 분석에 재사용하는 것은
    **데이터 왜곡** → 어떤 이유로도 절대 금지
 4. 차트가 없는 상태에서 Notion 페이지를 먼저 생성하는 것은 허용
    → 차트 섹션에 "차트는 git push 완료 후 추가 예정" 텍스트 삽입
+
+## analyze.py 차트 자동 전환 로직 (현재 구현 완료)
+
+has_hadr 플래그로 HADR 데이터 유무를 자동 판별:
+
+```
+has_hadr = True  (동기모드 등 HADR wait > 0)
+  차트01: HADR wait 시계열 + 분포
+  차트02: TPS / Commits/sec / Batch/sec
+  차트04: HADR wait / TPS / Batch / NIC
+
+has_hadr = False (비동기모드 등 HADR wait = 0)
+  차트01: Batch/sec 시계열 + 분포     ← PDH 데이터만
+  차트02: Batch / CPU / Disk          ← PDH 데이터만
+  차트04: Batch / CPU / Disk / NIC    ← PDH 데이터만
+
+차트03: CPU + NIC 사용률              ← 항상 PDH 데이터
+```
+
+⚠️ 핵심 원칙:
+- HADR CSV 데이터(h1, h10)는 반드시 has_hadr 확인 후에만 사용
+- has_hadr=False이면 h1/h10 데이터를 절대 차트에 사용하지 않음
+- PDH 데이터(d1, d10)는 항상 안전하게 사용 가능
+- 차트 파일명: chart_01_main.png / chart_02_throughput.png / chart_03_cpu_nic.png / chart_04_kpi_summary.png
+
+## 서버 스펙 이미지 처리
+- data/ 폴더에 "스펙" 또는 "spec" 포함된 이미지 파일이 있으면 자동 탐지
+- analyze.py가 Notion 페이지 생성 후 자동으로 이미지 업로드 시도
+- Claude(MCP)에서 직접 분석 요청 시: [IMAGE_BASE64] 블록이 있으면 이미지를 분석하여 서버 스펙 정보를 텍스트로 Notion 페이지에 포함
+- base64 이미지를 컨텍스트에 적재하지 말 것 (대화창 폭발)
 
 ---
 

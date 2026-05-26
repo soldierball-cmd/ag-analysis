@@ -43,7 +43,7 @@
 - CPU/메모리 비교: 파일명에 CPU / Core / NUMA / Memory / RAM 포함
 - 기타/범용: 위 해당 없으면 유효 지표 자동 감지
 
-### 2단계: CSV 파싱 (bash_tool Python)
+### 2단계: CSV 파싱 (JS에서 처리 후 통계 JSON 전달)
 PDH CSV (CP949 인코딩, 컬럼 키워드 자동 탐색):
 - % Processor Time → CPU 사용률
 - Batch Requests/sec → 배치 처리량
@@ -73,45 +73,71 @@ NIC 사용률 계산:
 - Disk Latency: 정상 <5ms / 주의 5~15ms / 위험 >15ms
 - PLE: 정상 >300 / 주의 100~300 / 위험 <100
 
-### 4단계: Notion 새 페이지 생성 (Notion MCP)
+### 4단계: has_hadr 판별 (차트 분기의 핵심)
+파싱된 HADR CSV의 avg_wait_per_commit_ms 평균을 확인:
+- has_hadr = True: HADR 데이터가 있고 avg_wait > 0 (동기모드 등)
+- has_hadr = False: HADR 데이터가 없거나 avg_wait = 0 (비동기모드 등)
+
+**절대 규칙: has_hadr=False이면 HADR 데이터를 차트/분석에 절대 사용하지 않음**
+**차트는 항상 해당 분석의 CSV 데이터로 생성된 것만 삽입 (다른 분석 차트 재사용=데이터 왜곡=절대 금지)**
+
+### 5단계: Notion 새 페이지 생성 (Notion MCP)
 - notion-create-pages 사용
 - parent page_id: 366dadb5-6b2f-8019-8e65-d0de1d942753
 - 페이지 제목: [분석] {테스트 제목} — {YYYY-MM-DD}
-- NOTION_TEMPLATE.md 구조 기반으로 작성
-- 차트 이미지 GitHub Pages URL로 삽입:
-  https://soldierball-cmd.github.io/ag-analysis/charts/chart_01_hadr_wait.png
-  https://soldierball-cmd.github.io/ag-analysis/charts/chart_02_throughput.png
-  https://soldierball-cmd.github.io/ag-analysis/charts/chart_03_cpu_nic.png
-  https://soldierball-cmd.github.io/ag-analysis/charts/chart_04_kpi_summary.png
+- NOTION_TEMPLATE.md + PROCESS.md 구조 기반으로 작성
 
-### 5단계: 완료 안내
+**차트 URL (has_hadr에 따라 내용이 다르게 생성됨):**
+- chart_01_main.png — has_hadr=True: HADR wait / has_hadr=False: Batch/sec
+- chart_02_throughput.png — has_hadr=True: TPS/Commits/Batch / has_hadr=False: Batch/CPU/Disk
+- chart_03_cpu_nic.png — 항상 CPU + NIC (PDH 데이터)
+- chart_04_kpi_summary.png — has_hadr=True: HADRwait/TPS/Batch/NIC / has_hadr=False: Batch/CPU/Disk/NIC
+
+GitHub Pages Base URL: https://soldierball-cmd.github.io/ag-analysis/charts/
+
+**차트 삽입 조건:**
+- analyze.py 실행 후 git push가 완료된 차트만 삽입
+- GitHub Pages에 해당 분석의 차트가 없으면 삽입하지 말고 안내만 할 것
+- 다른 분석의 차트를 재사용하는 것은 데이터 왜곡 → 절대 금지
+
+### 6단계: 서버 스펙 이미지 처리
+- 이미지가 업로드된 경우 분석하여 서버 스펙 정보를 Notion 페이지에 텍스트로 포함
+- base64 이미지를 컨텍스트에 적재하지 말 것 (대화창 폭발)
+- Notion 페이지 생성 후 이미지 업로드는 analyze.py가 자동 처리 (data/ 폴더에 "스펙"/"spec" 포함 파일)
+
+### 7단계: 완료 안내
 - 생성된 Notion 페이지 URL 안내
 - 차트 이미지 반영을 위한 PowerShell 명령어 안내:
-  cd D:\12.git\ag-analysis && python analyze.py {모드}
+  ```
+  cd D:\12.git\ag-analysis
+  python analyze.py {모드}
+  ```
 
 ---
 
 ## Notion 페이지 작성 원칙
 
-1. 시나리오에 맞는 핵심 지표를 Claude가 자동 선정
-2. 모든 차트 앞에 callout(>) 블록 필수:
-   - 왜 이 차트를 넣었는지 (목적)
-   - 차트 읽는 법
+1. **📌 개요 섹션 필수**: 분석 결과의 핵심 인사이트를 모드별로 먼저 서술
+2. 모든 차트 앞에 callout(>) 블록 필수: 왜 이 차트 / 읽는 법
 3. 통계는 반드시 실측 CSV 기반 (추정값 사용 금지)
-4. avg / P95 / max / stdev 모두 포함
+4. has_hadr=False: "HADR wait = 0ms — ASYNC 모드 정상 동작" 반드시 명시
 5. Transaction Delay 증가 = 병목 아님 (NIC/복제 시나리오 시 반드시 명시)
 6. 단순 수치 나열이 아닌 인사이트 해석 포함
-7. 차트 base64를 컨텍스트에 올리지 말 것 (대화창 폭발)
-8. 매번 새 페이지 생성 (기존 페이지 수정 금지)
-9. 모든 내용 한국어로 작성
-10. 이미지 파일이 있으면 내용 분석 후 Notion 페이지에 인사이트 포함
+7. 리소스 임계값 표 (최대값, 여유%p 포함) 필수
+8. 차트 base64를 컨텍스트에 올리지 말 것 (대화창 폭발)
+9. 매번 새 페이지 생성 (기존 페이지 수정 금지)
+10. 모든 내용 한국어로 작성
 
 ---
 
 ## 핵심 제약사항
 
-- NOTION_TOKEN 코드 직접 입력 금지 (환경변수로만 사용)
-- 차트 base64를 Claude 컨텍스트에 올리지 말 것 (대화창 폭발)
-- Claude 서버에서 GitHub Pages curl 시 403 반환 → 정상 (브라우저에서는 접근 가능)
-- Claude 서버에서 api.notion.com 직접 호출 불가 → Notion MCP 사용
-- shell MCP 없음 (@modelcontextprotocol/server-shell 존재 안 함)
+| 제약 | 이유 |
+|---|---|
+| NOTION_TOKEN 코드 직접 입력 금지 | GitHub push 차단 |
+| 차트 base64를 Claude 컨텍스트에 올리지 말 것 | 대화창 폭발 |
+| has_hadr=False이면 HADR 데이터 차트 사용 금지 | 데이터 왜곡 |
+| 다른 분석의 차트 URL 재사용 금지 | 데이터 왜곡 |
+| Claude 서버 → GitHub Pages curl 시 403 | 정상 (브라우저에서는 접근 가능) |
+| Claude 서버 → api.notion.com 직접 호출 불가 | Notion MCP 사용 |
+| shell MCP 없음 | @modelcontextprotocol/server-shell 존재 안 함 |
